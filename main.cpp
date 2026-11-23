@@ -11,6 +11,7 @@
 #include <QFontDatabase>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -71,7 +72,7 @@ struct ThemeConfig {
     int editorFontSize = 16;
     QFont::Weight editorFontWeight = QFont::Normal;
 
-    // 4 bottom-left text colors
+    // 4 bottom-right text colors
     std::array<QColor, 4> textColors = {
         QColor("#FFFFFF"), // Color 1
         QColor("#B4C9AE"), // Color 2
@@ -97,14 +98,26 @@ struct KeybindingsConfig {
     QString zoomReset = QStringLiteral("Ctrl+0");
 
     QString dividerTrigger = QStringLiteral("---");
-    QString colorModeTrigger = QStringLiteral("jj");
-    qint64 colorModeTimeoutMs = 350;
+
+    QString leaderTrigger = QStringLiteral("jj");
+    qint64 leaderTimeoutMs = 350;
     std::array<QString, 4> colorKeys = {
         QStringLiteral("j"),
         QStringLiteral("k"),
         QStringLiteral("l"),
         QStringLiteral(";")
     };
+    std::array<QString, 4> formatKeys = {
+        QStringLiteral("a"), // Bold
+        QStringLiteral("s"), // Italic
+        QStringLiteral("d"), // Font size +2px
+        QStringLiteral("f")  // Font size -2px
+    };
+
+    QString newTabTrigger = QStringLiteral("ff");
+    qint64 newTabTimeoutMs = 350;
+    QString resetFormatKey = QStringLiteral("h");
+    int fontSizeStep = 4;
 };
 
 struct AppConfig {
@@ -120,9 +133,12 @@ struct AppConfig {
 struct ClosedNote {
     QString title;
     QString trashFilePath;
-    QJsonArray colorSpans;
+    QJsonArray styleSpans;
     QString activeColor;
     int activeColorIndex = 0;
+    bool activeBold = false;
+    bool activeItalic = false;
+    int activeFontSize = 16;
     int index = -1;
 };
 
@@ -149,7 +165,7 @@ QColor parseColor(const QString &str, const QColor &fallback) {
     return c.isValid() ? c : fallback;
 }
 
-QFont makeFontWithFallback(const QString &primaryFamily, int pixelSize, QFont::Weight weight) {
+QFont makeFontWithFallback(const QString &primaryFamily, int pixelSize, QFont::Weight weight, bool italic = false) {
     QFont font;
     QStringList families;
     if (!primaryFamily.trimmed().isEmpty()) {
@@ -163,6 +179,7 @@ QFont makeFontWithFallback(const QString &primaryFamily, int pixelSize, QFont::W
     font.setFamilies(families);
     font.setPixelSize(std::clamp(pixelSize, 8, 72));
     font.setWeight(weight);
+    font.setItalic(italic);
     return font;
 }
 
@@ -249,11 +266,6 @@ ThemeConfig loadThemeFromFile(const QString &path) {
 AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeOverride) {
     AppConfig cfg;
 
-    // Locate config.json:
-    // 1. explicit --config <path> or $MIMENOTES_CONFIG / $NOTES_CONFIG
-    // 2. ./config.json in current directory
-    // 3. <appBinaryDir>/config.json
-    // 4. ~/.config/mimenotes/config.json
     QStringList candidates;
     if (!explicitConfigPath.isEmpty()) {
         candidates << expandTilde(explicitConfigPath);
@@ -277,6 +289,7 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
         }
     }
 
+    int configDefaultFontSize = -1;
     if (!cfg.configFilePath.isEmpty()) {
         cfg.themesDirPath = QFileInfo(cfg.configFilePath).absoluteDir().filePath("themes");
         QFile file(cfg.configFilePath);
@@ -285,6 +298,12 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
             if (doc.isObject()) {
                 QJsonObject root = doc.object();
                 cfg.themeName = root["theme"].toString(cfg.themeName);
+                if (root.contains("default_font_size")) {
+                    configDefaultFontSize = std::clamp(root["default_font_size"].toInt(16), 8, 72);
+                }
+                if (root.contains("font_size_step")) {
+                    cfg.keys.fontSizeStep = std::clamp(root["font_size_step"].toInt(4), 1, 24);
+                }
                 cfg.notesDir = expandTilde(root["notes_dir"].toString());
 
                 if (root["keybindings"].isObject()) {
@@ -308,13 +327,15 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
                     if (divTrig.size() >= 2) {
                         cfg.keys.dividerTrigger = divTrig;
                     }
-                    QString colTrig = kb["color_mode_trigger"].toString(cfg.keys.colorModeTrigger);
-                    if (colTrig.size() == 2) {
-                        cfg.keys.colorModeTrigger = colTrig;
+
+                    QString leadTrig = kb["leader_trigger"].toString(
+                        kb["color_mode_trigger"].toString(cfg.keys.leaderTrigger));
+                    if (leadTrig.size() == 2) {
+                        cfg.keys.leaderTrigger = leadTrig;
                     }
-                    cfg.keys.colorModeTimeoutMs = std::clamp<qint64>(
-                        kb["color_mode_timeout_ms"].toInt(static_cast<int>(cfg.keys.colorModeTimeoutMs)),
-                        80, 2000);
+                    int leadTimeout = kb["leader_timeout_ms"].toInt(
+                        kb["color_mode_timeout_ms"].toInt(static_cast<int>(cfg.keys.leaderTimeoutMs)));
+                    cfg.keys.leaderTimeoutMs = std::clamp<qint64>(leadTimeout, 80, 2000);
 
                     if (kb["color_keys"].isArray()) {
                         QJsonArray ck = kb["color_keys"].toArray();
@@ -324,6 +345,29 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
                                 cfg.keys.colorKeys[i] = k;
                             }
                         }
+                    }
+
+                    if (kb["format_keys"].isArray()) {
+                        QJsonArray fk = kb["format_keys"].toArray();
+                        for (int i = 0; i < std::min<int>(4, fk.size()); ++i) {
+                            QString k = fk[i].toString();
+                            if (!k.isEmpty()) {
+                                cfg.keys.formatKeys[i] = k;
+                            }
+                        }
+                    }
+
+                    QString ntTrig = kb["new_tab_trigger"].toString(cfg.keys.newTabTrigger);
+                    if (ntTrig.size() == 2) {
+                        cfg.keys.newTabTrigger = ntTrig;
+                    }
+                    cfg.keys.newTabTimeoutMs = std::clamp<qint64>(
+                        kb["new_tab_timeout_ms"].toInt(static_cast<int>(cfg.keys.newTabTimeoutMs)),
+                        80, 2000);
+
+                    QString rstKey = kb["reset_format_key"].toString(cfg.keys.resetFormatKey);
+                    if (!rstKey.isEmpty()) {
+                        cfg.keys.resetFormatKey = rstKey;
                     }
                 }
             }
@@ -358,12 +402,16 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
         }
     }
 
+    if (configDefaultFontSize > 0) {
+        cfg.theme.editorFontSize = configDefaultFontSize;
+    }
+
     return cfg;
 }
 
 // Plain-text editor supporting:
-// - per-character colors from the 4 theme colors
-// - configurable quick chord (default 'jj') followed by 4 color keys (default 'j', 'k', 'l', ';')
+// - per-character colors from the 4 theme colors ('jj' + 'j'/'k'/'l'/';' or bottom-right dots)
+// - per-character bold, italic, and +/-2px font size ('ff' + 'a'/'s'/'d'/'f' or bottom-left icons)
 // - automatic horizontal dividers when the user types the divider trigger (default "---")
 class NoteEditor : public QTextEdit {
 public:
@@ -374,7 +422,8 @@ public:
           theme_(theme),
           keys_(keys),
           activeColor_(theme.textColors[0]),
-          activeColorIndex_(0) {
+          activeColorIndex_(0),
+          activeFontSize_(theme.editorFontSize) {
         setFrameStyle(QFrame::NoFrame);
         setAcceptRichText(false);
         document()->setDocumentMargin(0);
@@ -382,23 +431,31 @@ public:
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
         applyThemeStyle();
-        applyTypingColorToCursor();
+        applyTypingFormatToCursor();
     }
 
-    std::function<void(bool)> onColorModeChanged;
-    std::function<void(int, const QColor &)> onColorPicked;
+    std::function<void(bool)> onLeaderModeChanged;
+    std::function<void()> onFormattingChanged;
+    std::function<void()> onNewTabTriggered;
 
     QColor activeTypingColor() const { return activeColor_; }
     int activeTypingColorIndex() const { return activeColorIndex_; }
-    bool isColorModeActive() const { return colorMode_; }
+    bool isBoldActive() const { return activeBold_; }
+    bool isItalicActive() const { return activeItalic_; }
+    int activeFontSize() const { return activeFontSize_; }
 
     void updateConfig(const ThemeConfig &newTheme, const KeybindingsConfig &newKeys) {
         std::array<QColor, 4> oldPalette = theme_.textColors;
+        int oldDefaultSize = theme_.editorFontSize;
         theme_ = newTheme;
         keys_ = newKeys;
         applyThemeStyle();
 
-        // Remap existing colored text spans that matched one of the 4 theme palette slots
+        if (activeFontSize_ == oldDefaultSize) {
+            activeFontSize_ = theme_.editorFontSize;
+        }
+
+        // Remap existing styled text spans
         QTextBlock block = document()->begin();
         QTextCursor cursor(document());
         while (block.isValid()) {
@@ -406,15 +463,25 @@ public:
                 for (auto it = block.begin(); !it.atEnd(); ++it) {
                     QTextFragment frag = it.fragment();
                     if (!frag.isValid()) continue;
-                    QColor fragCol = frag.charFormat().foreground().color();
+                    QTextCharFormat curFmt = frag.charFormat();
+                    QColor fragCol = curFmt.foreground().color();
                     int slot = matchColorSlot(fragCol, oldPalette);
-                    if (slot >= 0) {
-                        cursor.setPosition(frag.position());
-                        cursor.setPosition(frag.position() + frag.length(), QTextCursor::KeepAnchor);
-                        QTextCharFormat fmt;
-                        fmt.setForeground(theme_.textColors[slot]);
-                        cursor.mergeCharFormat(fmt);
-                    }
+
+                    QFont curFont = curFmt.font();
+                    int px = curFont.pixelSize() > 0 ? curFont.pixelSize() : theme_.editorFontSize;
+                    bool b = curFont.weight() >= QFont::Bold;
+                    bool itl = curFont.italic();
+
+                    cursor.setPosition(frag.position());
+                    cursor.setPosition(frag.position() + frag.length(), QTextCursor::KeepAnchor);
+                    QTextCharFormat fmt;
+                    fmt.setForeground(slot >= 0 ? theme_.textColors[slot] : fragCol);
+                    fmt.setFont(makeFontWithFallback(
+                        theme_.editorFontFamily,
+                        px,
+                        b ? QFont::Bold : theme_.editorFontWeight,
+                        itl));
+                    cursor.mergeCharFormat(fmt);
                 }
             }
             block = block.next();
@@ -424,7 +491,7 @@ public:
             activeColor_ = theme_.textColors[activeColorIndex_];
         }
         formatExistingDividers();
-        applyTypingColorToCursor();
+        applyTypingFormatToCursor();
         viewport()->update();
     }
 
@@ -441,13 +508,84 @@ public:
             activeColorIndex_ = slot;
         }
         QTextCursor cursor = textCursor();
-        QTextCharFormat fmt;
-        fmt.setForeground(activeColor_);
         if (applyToSelection && cursor.hasSelection()) {
+            QTextCharFormat fmt;
+            fmt.setForeground(activeColor_);
             cursor.mergeCharFormat(fmt);
             formatExistingDividers();
         }
-        mergeCurrentCharFormat(fmt);
+        applyTypingFormatToCursor();
+        if (onFormattingChanged) {
+            onFormattingChanged();
+        }
+    }
+
+    void setFormattingState(bool bold, bool italic, int fontSize) {
+        activeBold_ = bold;
+        activeItalic_ = italic;
+        activeFontSize_ = std::clamp(fontSize, 8, 72);
+        applyTypingFormatToCursor();
+    }
+
+    void toggleBold() {
+        activeBold_ = !activeBold_;
+        QTextCursor cursor = textCursor();
+        if (cursor.hasSelection()) {
+            applySpanFontOverride(cursor, [this](bool &, bool &b, int &) {
+                b = activeBold_;
+            });
+        }
+        applyTypingFormatToCursor();
+        if (onFormattingChanged) {
+            onFormattingChanged();
+        }
+    }
+
+    void toggleItalic() {
+        activeItalic_ = !activeItalic_;
+        QTextCursor cursor = textCursor();
+        if (cursor.hasSelection()) {
+            applySpanFontOverride(cursor, [this](bool &itl, bool &, int &) {
+                itl = activeItalic_;
+            });
+        }
+        applyTypingFormatToCursor();
+        if (onFormattingChanged) {
+            onFormattingChanged();
+        }
+    }
+
+    void adjustTypingFontSize(int deltaPx) {
+        activeFontSize_ = std::clamp(activeFontSize_ + deltaPx, 8, 72);
+        QTextCursor cursor = textCursor();
+        if (cursor.hasSelection()) {
+            applySpanFontOverride(cursor, [deltaPx](bool &, bool &, int &px) {
+                px = std::clamp(px + deltaPx, 8, 72);
+            });
+        }
+        applyTypingFormatToCursor();
+        if (onFormattingChanged) {
+            onFormattingChanged();
+        }
+    }
+
+    void resetFormatting() {
+        activeColorIndex_ = 0;
+        activeColor_ = theme_.textColors[0];
+        activeBold_ = false;
+        activeItalic_ = false;
+        activeFontSize_ = theme_.editorFontSize;
+
+        QTextCursor cursor = textCursor();
+        if (cursor.hasSelection()) {
+            QTextCharFormat fmt = currentTypingCharFormat();
+            cursor.mergeCharFormat(fmt);
+            formatExistingDividers();
+        }
+        applyTypingFormatToCursor();
+        if (onFormattingChanged) {
+            onFormattingChanged();
+        }
     }
 
     void formatExistingDividers() {
@@ -465,7 +603,7 @@ public:
         viewport()->update();
     }
 
-    QJsonArray exportColorSpans() const {
+    QJsonArray exportStyleSpans() const {
         QJsonArray spans;
         QTextBlock block = document()->begin();
         while (block.isValid()) {
@@ -478,11 +616,17 @@ public:
                 if (!frag.isValid()) {
                     continue;
                 }
-                QColor col = frag.charFormat().foreground().color();
+                QTextCharFormat fmt = frag.charFormat();
+                QColor col = fmt.foreground().color();
                 if (!col.isValid() || col.alpha() == 0) {
                     col = theme_.textColors[0];
                 }
+                QFont f = fmt.font();
+                bool bold = f.weight() >= QFont::Bold;
+                bool italic = f.italic();
+                int size = f.pixelSize() > 0 ? f.pixelSize() : theme_.editorFontSize;
                 int slot = matchColorSlot(col, theme_.textColors);
+
                 QJsonObject obj;
                 obj["pos"] = frag.position();
                 obj["len"] = frag.length();
@@ -490,6 +634,9 @@ public:
                 if (slot >= 0) {
                     obj["slot"] = slot;
                 }
+                obj["bold"] = bold;
+                obj["italic"] = italic;
+                obj["size"] = size;
                 spans.append(obj);
             }
             block = block.next();
@@ -497,7 +644,7 @@ public:
         return spans;
     }
 
-    void importColorSpans(const QJsonArray &spans) {
+    void importStyleSpans(const QJsonArray &spans) {
         QTextCursor cursor(document());
         int docLen = document()->characterCount();
         for (const QJsonValue &val : spans) {
@@ -515,20 +662,30 @@ public:
             if (end <= pos) {
                 continue;
             }
+            bool bold = obj["bold"].toBool(false);
+            bool italic = obj["italic"].toBool(false);
+            int size = std::clamp(obj["size"].toInt(theme_.editorFontSize), 8, 72);
+
             cursor.setPosition(pos);
             cursor.setPosition(end, QTextCursor::KeepAnchor);
             QTextCharFormat fmt;
             fmt.setForeground(col);
+            fmt.setFont(makeFontWithFallback(
+                theme_.editorFontFamily,
+                size,
+                bold ? QFont::Bold : theme_.editorFontWeight,
+                italic));
             cursor.mergeCharFormat(fmt);
         }
         formatExistingDividers();
-        applyTypingColorToCursor();
+        applyTypingFormatToCursor();
     }
 
 protected:
     void focusOutEvent(QFocusEvent *event) override {
-        setColorMode(false);
-        lastTriggerFirstPressMs_ = 0;
+        setLeaderMode(false);
+        lastLeaderTriggerMs_ = 0;
+        lastNewTabTriggerMs_ = 0;
         QTextEdit::focusOutEvent(event);
     }
 
@@ -558,15 +715,17 @@ protected:
     }
 
     void keyPressEvent(QKeyEvent *event) override {
-        // 1. Handle active color mode (entered via quick color_mode_trigger chord, e.g. "jj")
-        if (colorMode_) {
-            int key = event->key();
-            if (key == Qt::Key_Shift || key == Qt::Key_Control ||
-                key == Qt::Key_Alt || key == Qt::Key_Meta) {
-                QTextEdit::keyPressEvent(event);
-                return;
-            }
+        int key = event->key();
+        if (key == Qt::Key_Shift || key == Qt::Key_Control ||
+            key == Qt::Key_Alt || key == Qt::Key_Meta) {
+            QTextEdit::keyPressEvent(event);
+            return;
+        }
 
+        // 1. Handle active leader mode (entered via quick leader_trigger chord, default "jj"):
+        //    - j, k, l, ; -> Colors 1..4
+        //    - a -> Bold, s -> Italic, d -> Font size +2px, f -> Font size -2px
+        if (leaderMode_) {
             QString txt = event->text();
             int colorIndex = -1;
             for (int i = 0; i < 4; ++i) {
@@ -576,14 +735,42 @@ protected:
                 }
             }
 
-            setColorMode(false);
-            lastTriggerFirstPressMs_ = 0;
+            int fmtAction = -1;
+            for (int i = 0; i < 4; ++i) {
+                if (!txt.isEmpty() && txt.compare(keys_.formatKeys[i], Qt::CaseInsensitive) == 0) {
+                    fmtAction = i;
+                    break;
+                }
+            }
 
+            setLeaderMode(false);
+            lastLeaderTriggerMs_ = 0;
+            lastNewTabTriggerMs_ = 0;
+
+            if (!txt.isEmpty() && txt.compare(keys_.resetFormatKey, Qt::CaseInsensitive) == 0) {
+                resetFormatting();
+                event->accept();
+                return;
+            }
             if (colorIndex >= 0) {
                 setActiveTypingColorSlot(colorIndex, true);
-                if (onColorPicked) {
-                    onColorPicked(colorIndex, theme_.textColors[colorIndex]);
-                }
+                event->accept();
+                return;
+            }
+            if (fmtAction == 0) {
+                toggleBold();
+                event->accept();
+                return;
+            } else if (fmtAction == 1) {
+                toggleItalic();
+                event->accept();
+                return;
+            } else if (fmtAction == 2) {
+                adjustTypingFontSize(keys_.fontSizeStep);
+                event->accept();
+                return;
+            } else if (fmtAction == 3) {
+                adjustTypingFontSize(-keys_.fontSizeStep);
                 event->accept();
                 return;
             }
@@ -594,37 +781,64 @@ protected:
             }
         }
 
-        // 2. Detect quick 2-character color_mode_trigger chord (default "jj")
         bool noModifiers = !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
-        QString trig = keys_.colorModeTrigger;
-        if (noModifiers && trig.size() == 2 && !event->text().isEmpty()) {
-            QString firstChar = trig.left(1);
-            QString secondChar = trig.mid(1, 1);
-            qint64 now = QDateTime::currentMSecsSinceEpoch();
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+        // 2A. Detect quick 2-character leader_trigger chord (default "jj")
+        const QString &leadTrig = keys_.leaderTrigger;
+        if (noModifiers && leadTrig.size() == 2 && !event->text().isEmpty()) {
+            QString firstChar = leadTrig.left(1);
+            QString secondChar = leadTrig.mid(1, 1);
 
             if (event->text() == secondChar &&
-                lastTriggerFirstPressMs_ > 0 &&
-                (now - lastTriggerFirstPressMs_) <= keys_.colorModeTimeoutMs) {
+                lastLeaderTriggerMs_ > 0 &&
+                (now - lastLeaderTriggerMs_) <= keys_.leaderTimeoutMs) {
                 QTextCursor c = textCursor();
                 int posInBlk = c.positionInBlock();
                 if (!c.hasSelection() && posInBlk > 0 &&
                     c.block().text().mid(posInBlk - 1, 1) == firstChar) {
                     c.deletePreviousChar();
                     setTextCursor(c);
-                    lastTriggerFirstPressMs_ = 0;
-                    setColorMode(true);
+                    lastLeaderTriggerMs_ = 0;
+                    lastNewTabTriggerMs_ = 0;
+                    setLeaderMode(true);
                     event->accept();
                     return;
                 }
             }
-
-            if (event->text() == firstChar) {
-                lastTriggerFirstPressMs_ = now;
-            } else {
-                lastTriggerFirstPressMs_ = 0;
-            }
+            lastLeaderTriggerMs_ = (event->text() == firstChar) ? now : 0;
         } else {
-            lastTriggerFirstPressMs_ = 0;
+            lastLeaderTriggerMs_ = 0;
+        }
+
+        // 2B. Detect quick 2-character new_tab_trigger chord (default "ff") -> creates a new tab immediately
+        const QString &ntTrig = keys_.newTabTrigger;
+        if (noModifiers && ntTrig.size() == 2 && !event->text().isEmpty()) {
+            QString firstChar = ntTrig.left(1);
+            QString secondChar = ntTrig.mid(1, 1);
+
+            if (event->text() == secondChar &&
+                lastNewTabTriggerMs_ > 0 &&
+                (now - lastNewTabTriggerMs_) <= keys_.newTabTimeoutMs) {
+                QTextCursor c = textCursor();
+                int posInBlk = c.positionInBlock();
+                if (!c.hasSelection() && posInBlk > 0 &&
+                    c.block().text().mid(posInBlk - 1, 1) == firstChar) {
+                    c.deletePreviousChar();
+                    setTextCursor(c);
+                    lastNewTabTriggerMs_ = 0;
+                    lastLeaderTriggerMs_ = 0;
+                    setLeaderMode(false);
+                    if (onNewTabTriggered) {
+                        onNewTabTriggered();
+                    }
+                    event->accept();
+                    return;
+                }
+            }
+            lastNewTabTriggerMs_ = (event->text() == firstChar) ? now : 0;
+        } else {
+            lastNewTabTriggerMs_ = 0;
         }
 
         QTextCursor cursor = textCursor();
@@ -669,12 +883,11 @@ protected:
                     cursor.movePosition(QTextCursor::EndOfBlock);
                     cursor.insertBlock();
                 }
-                QTextCharFormat fmt;
-                fmt.setForeground(activeColor_);
+                QTextCharFormat fmt = currentTypingCharFormat();
                 cursor.setCharFormat(fmt);
                 cursor.endEditBlock();
                 setTextCursor(cursor);
-                applyTypingColorToCursor();
+                applyTypingFormatToCursor();
                 event->accept();
                 return;
             }
@@ -682,17 +895,16 @@ protected:
                 cursor.beginEditBlock();
                 cursor.movePosition(QTextCursor::EndOfBlock);
                 cursor.insertBlock();
-                QTextCharFormat fmt;
-                fmt.setForeground(activeColor_);
+                QTextCharFormat fmt = currentTypingCharFormat();
                 cursor.setCharFormat(fmt);
                 cursor.endEditBlock();
                 setTextCursor(cursor);
             }
         }
 
-        // 5. Ensure typed characters always use the currently selected typing color
+        // 5. Ensure typed characters always use the currently selected typing color/bold/italic/size
         if (!event->text().isEmpty() && noModifiers) {
-            applyTypingColorToCursor();
+            applyTypingFormatToCursor();
         }
 
         QTextEdit::keyPressEvent(event);
@@ -717,9 +929,7 @@ protected:
             return;
         }
         QTextCursor cursor = textCursor();
-        QTextCharFormat fmt;
-        fmt.setForeground(activeColor_);
-        cursor.insertText(source->text(), fmt);
+        cursor.insertText(source->text(), currentTypingCharFormat());
         setTextCursor(cursor);
         formatExistingDividers();
     }
@@ -733,6 +943,66 @@ private:
             }
         }
         return -1;
+    }
+
+    void applySpanFontOverride(QTextCursor selectionCursor,
+                               const std::function<void(bool &italic, bool &bold, int &px)> &mutator) {
+        int selStart = selectionCursor.selectionStart();
+        int selEnd = selectionCursor.selectionEnd();
+        if (selEnd <= selStart) return;
+
+        struct SpanMod {
+            int start;
+            int end;
+            QColor color;
+            bool italic;
+            bool bold;
+            int px;
+        };
+        QList<SpanMod> mods;
+
+        QTextBlock block = document()->findBlock(selStart);
+        while (block.isValid() && block.position() < selEnd) {
+            if (!isDividerBlock(block)) {
+                for (auto it = block.begin(); !it.atEnd(); ++it) {
+                    QTextFragment frag = it.fragment();
+                    if (!frag.isValid()) continue;
+                    int fStart = frag.position();
+                    int fEnd = fStart + frag.length();
+                    int oStart = std::max(selStart, fStart);
+                    int oEnd = std::min(selEnd, fEnd);
+                    if (oEnd > oStart) {
+                        QTextCharFormat cfmt = frag.charFormat();
+                        QColor col = cfmt.foreground().color();
+                        if (!col.isValid() || col.alpha() == 0) col = activeColor_;
+                        QFont f = cfmt.font();
+                        bool itl = f.italic();
+                        bool b = f.weight() >= QFont::Bold;
+                        int px = f.pixelSize() > 0 ? f.pixelSize() : activeFontSize_;
+                        mutator(itl, b, px);
+                        mods.append(SpanMod{oStart, oEnd, col, itl, b, px});
+                    }
+                }
+            }
+            block = block.next();
+        }
+
+        QTextCursor editCursor(document());
+        editCursor.beginEditBlock();
+        for (const SpanMod &m : mods) {
+            editCursor.setPosition(m.start);
+            editCursor.setPosition(m.end, QTextCursor::KeepAnchor);
+            QTextCharFormat fmt;
+            fmt.setForeground(m.color);
+            fmt.setFont(makeFontWithFallback(
+                theme_.editorFontFamily,
+                m.px,
+                m.bold ? QFont::Bold : theme_.editorFontWeight,
+                m.italic));
+            editCursor.mergeCharFormat(fmt);
+        }
+        editCursor.endEditBlock();
+        formatExistingDividers();
     }
 
     void applyThemeStyle() {
@@ -766,11 +1036,11 @@ private:
         setStyleSheet(sheet);
     }
 
-    void setColorMode(bool active) {
-        if (colorMode_ != active) {
-            colorMode_ = active;
-            if (onColorModeChanged) {
-                onColorModeChanged(colorMode_);
+    void setLeaderMode(bool active) {
+        if (leaderMode_ != active) {
+            leaderMode_ = active;
+            if (onLeaderModeChanged) {
+                onLeaderModeChanged(leaderMode_);
             }
         }
     }
@@ -798,7 +1068,7 @@ private:
         }
         c.endEditBlock();
         setTextCursor(c);
-        applyTypingColorToCursor();
+        applyTypingFormatToCursor();
         viewport()->update();
     }
 
@@ -818,29 +1088,149 @@ private:
         cursor.insertText(QStringLiteral("---"), divFmt);
 
         cursor.insertBlock();
-        QTextCharFormat textFmt;
-        textFmt.setForeground(activeColor_);
+        QTextCharFormat textFmt = currentTypingCharFormat();
         cursor.setBlockCharFormat(textFmt);
         cursor.setCharFormat(textFmt);
 
         cursor.endEditBlock();
         setTextCursor(cursor);
-        applyTypingColorToCursor();
+        applyTypingFormatToCursor();
         viewport()->update();
     }
 
-    void applyTypingColorToCursor() {
+    QTextCharFormat currentTypingCharFormat() const {
         QTextCharFormat fmt;
         fmt.setForeground(activeColor_);
-        mergeCurrentCharFormat(fmt);
+        fmt.setFont(makeFontWithFallback(
+            theme_.editorFontFamily,
+            activeFontSize_,
+            activeBold_ ? QFont::Bold : theme_.editorFontWeight,
+            activeItalic_));
+        return fmt;
+    }
+
+    void applyTypingFormatToCursor() {
+        mergeCurrentCharFormat(currentTypingCharFormat());
     }
 
     ThemeConfig theme_;
     KeybindingsConfig keys_;
     QColor activeColor_;
     int activeColorIndex_ = 0;
-    qint64 lastTriggerFirstPressMs_ = 0;
-    bool colorMode_ = false;
+    bool activeBold_ = false;
+    bool activeItalic_ = false;
+    int activeFontSize_ = 16;
+    qint64 lastLeaderTriggerMs_ = 0;
+    qint64 lastNewTabTriggerMs_ = 0;
+    bool leaderMode_ = false;
+};
+
+// Bottom-left formatting icon button (Bold, Italic, Up Arrow, Down Arrow)
+class FormatIconButton : public QWidget {
+public:
+    enum class IconType {
+        Bold,
+        Italic,
+        ArrowUp,
+        ArrowDown
+    };
+
+    FormatIconButton(IconType type, const ThemeConfig &theme, QWidget *parent = nullptr)
+        : QWidget(parent), type_(type), theme_(theme) {
+        setFixedSize(14, 14);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+        setMouseTracking(true);
+    }
+
+    std::function<void()> onClicked;
+
+    void applyTheme(const ThemeConfig &theme) {
+        theme_ = theme;
+        update();
+    }
+
+    void setActive(bool active) {
+        if (active_ != active) {
+            active_ = active;
+            update();
+        }
+    }
+
+    void setFormatModeHighlight(bool highlighted) {
+        if (highlighted_ != highlighted) {
+            highlighted_ = highlighted;
+            update();
+        }
+    }
+
+protected:
+    void enterEvent(QEnterEvent *) override {
+        hovered_ = true;
+        update();
+    }
+
+    void leaveEvent(QEvent *) override {
+        hovered_ = false;
+        update();
+    }
+
+    void mousePressEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && onClicked) {
+            onClicked();
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::TextAntialiasing, true);
+
+        QColor iconColor;
+        if (highlighted_) {
+            iconColor = theme_.plusHoverColor;
+        } else if (active_ || hovered_) {
+            iconColor = theme_.activeTabColor;
+        } else {
+            iconColor = theme_.inactiveTabColor;
+        }
+
+        if (type_ == IconType::Bold) {
+            QFont f = makeFontWithFallback(theme_.headerFontFamily, 13, QFont::ExtraBold, false);
+            p.setFont(f);
+            p.setPen(iconColor);
+            p.drawText(rect(), Qt::AlignCenter, QStringLiteral("B"));
+        } else if (type_ == IconType::Italic) {
+            QFont f = makeFontWithFallback(theme_.headerFontFamily, 13, QFont::DemiBold, true);
+            p.setFont(f);
+            p.setPen(iconColor);
+            p.drawText(rect(), Qt::AlignCenter, QStringLiteral("I"));
+        } else if (type_ == IconType::ArrowUp) {
+            QPen pen(iconColor, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            p.setPen(pen);
+            // Vertical shaft + up chevron
+            p.drawLine(QPointF(7.0, 11.5), QPointF(7.0, 2.8));
+            p.drawLine(QPointF(3.5, 6.2), QPointF(7.0, 2.5));
+            p.drawLine(QPointF(10.5, 6.2), QPointF(7.0, 2.5));
+        } else if (type_ == IconType::ArrowDown) {
+            QPen pen(iconColor, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            p.setPen(pen);
+            // Vertical shaft + down chevron
+            p.drawLine(QPointF(7.0, 2.5), QPointF(7.0, 11.2));
+            p.drawLine(QPointF(3.5, 7.8), QPointF(7.0, 11.5));
+            p.drawLine(QPointF(10.5, 7.8), QPointF(7.0, 11.5));
+        }
+    }
+
+private:
+    IconType type_;
+    ThemeConfig theme_;
+    bool active_ = false;
+    bool hovered_ = false;
+    bool highlighted_ = false;
 };
 
 // 12x12 circular color button matching Figma nodes 1:4, 1:5, 1:7, 1:9
@@ -1238,14 +1628,63 @@ public:
         editorLayout->addWidget(editorStack_);
         mainLayout->addWidget(editorContainer, 1);
 
-        // Bottom bar containing node 1:13 ("colors"):
-        // x = 20, y = 445 in 503x477 (20px from left, 20px from bottom), width = 96, height = 12
+        // Bottom bar:
+        // - Lower-left (x = 20): 4 formatting icons (Bold, Italic, Up Arrow, Down Arrow)
+        // - Lower-right (20px from right): 4 circular color dots (96 x 12)
         auto *bottomBar = new QWidget(centralRoot_);
-        bottomBar->setFixedHeight(32);
+        bottomBar->setFixedHeight(34);
         auto *bottomLayout = new QHBoxLayout(bottomBar);
         bottomLayout->setContentsMargins(20, 0, 20, 20);
         bottomLayout->setSpacing(0);
 
+        // Lower-left formatting icons row
+        auto *formatRow = new QWidget(bottomBar);
+        formatRow->setFixedHeight(14);
+        auto *formatLayout = new QHBoxLayout(formatRow);
+        formatLayout->setContentsMargins(0, 0, 0, 0);
+        formatLayout->setSpacing(14);
+
+        formatButtons_[0] = new FormatIconButton(FormatIconButton::IconType::Bold, appConfig_.theme, formatRow);
+        formatButtons_[0]->setToolTip("Bold (jj + a)");
+        formatButtons_[0]->onClicked = [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->toggleBold();
+                ed->setFocus();
+            }
+        };
+
+        formatButtons_[1] = new FormatIconButton(FormatIconButton::IconType::Italic, appConfig_.theme, formatRow);
+        formatButtons_[1]->setToolTip("Italic (jj + s)");
+        formatButtons_[1]->onClicked = [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->toggleItalic();
+                ed->setFocus();
+            }
+        };
+
+        formatButtons_[2] = new FormatIconButton(FormatIconButton::IconType::ArrowUp, appConfig_.theme, formatRow);
+        formatButtons_[2]->setToolTip("Increase font size (jj + d)");
+        formatButtons_[2]->onClicked = [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->adjustTypingFontSize(appConfig_.keys.fontSizeStep);
+                ed->setFocus();
+            }
+        };
+
+        formatButtons_[3] = new FormatIconButton(FormatIconButton::IconType::ArrowDown, appConfig_.theme, formatRow);
+        formatButtons_[3]->setToolTip("Decrease font size (jj + f)");
+        formatButtons_[3]->onClicked = [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->adjustTypingFontSize(-appConfig_.keys.fontSizeStep);
+                ed->setFocus();
+            }
+        };
+
+        for (int i = 0; i < 4; ++i) {
+            formatLayout->addWidget(formatButtons_[i]);
+        }
+
+        // Lower-right 4 color dots (96 x 12)
         auto *colorsRow = new QWidget(bottomBar);
         colorsRow->setFixedSize(96, 12);
         auto *colorsLayout = new QHBoxLayout(colorsRow);
@@ -1262,8 +1701,9 @@ public:
             colorsLayout->addWidget(btn);
         }
 
-        bottomLayout->addWidget(colorsRow, 0, Qt::AlignLeft | Qt::AlignTop);
+        bottomLayout->addWidget(formatRow, 0, Qt::AlignLeft | Qt::AlignVCenter);
         bottomLayout->addStretch(1);
+        bottomLayout->addWidget(colorsRow, 0, Qt::AlignRight | Qt::AlignVCenter);
         mainLayout->addWidget(bottomBar);
 
         applyWindowThemeStyle();
@@ -1347,6 +1787,19 @@ private:
             if (colorButtons_[i]) {
                 colorButtons_[i]->setColors(appConfig_.theme.textColors[i], appConfig_.theme.background);
             }
+            if (formatButtons_[i]) {
+                formatButtons_[i]->applyTheme(appConfig_.theme);
+            }
+        }
+    }
+
+    void syncFormatButtonsState() {
+        NoteEditor *ed = currentEditor();
+        if (formatButtons_[0]) {
+            formatButtons_[0]->setActive(ed && ed->isBoldActive());
+        }
+        if (formatButtons_[1]) {
+            formatButtons_[1]->setActive(ed && ed->isItalicActive());
         }
     }
 
@@ -1391,6 +1844,7 @@ private:
                 ed->updateConfig(appConfig_.theme, appConfig_.keys);
             }
         }
+        syncFormatButtonsState();
         updateWatchedConfigPaths();
         saveSessionState();
     }
@@ -1399,6 +1853,14 @@ private:
         for (ColorDotButton *btn : colorButtons_) {
             if (btn) {
                 btn->setColorModeHighlight(active);
+            }
+        }
+    }
+
+    void setFormatIconsHighlighted(bool active) {
+        for (FormatIconButton *btn : formatButtons_) {
+            if (btn) {
+                btn->setFormatModeHighlight(active);
             }
         }
     }
@@ -1464,9 +1926,22 @@ private:
             });
         }
 
-        bind(kb.zoomIn, [this]() { adjustZoom(1); });
-        bind(kb.zoomOut, [this]() { adjustZoom(-1); });
-        bind(kb.zoomReset, [this]() { resetZoom(); });
+        bind(kb.zoomIn, [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->adjustTypingFontSize(appConfig_.keys.fontSizeStep);
+            }
+        });
+        bind(kb.zoomOut, [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->adjustTypingFontSize(-appConfig_.keys.fontSizeStep);
+            }
+        });
+        bind(kb.zoomReset, [this]() {
+            if (auto *ed = currentEditor()) {
+                int diff = appConfig_.theme.editorFontSize - ed->activeFontSize();
+                ed->adjustTypingFontSize(diff);
+            }
+        });
     }
 
     int tabCount() const {
@@ -1483,8 +1958,10 @@ private:
         }
         saveAllDirty();
         setColorDotsHighlighted(false);
+        setFormatIconsHighlighted(false);
         editorStack_->setCurrentIndex(index);
         headerBar_->setCurrentIndex(index);
+        syncFormatButtonsState();
         if (!loadingSession_) {
             saveSessionState();
         }
@@ -1508,28 +1985,6 @@ private:
         }
         int next = (currentTabIndex() + delta + count) % count;
         setCurrentTabIndex(next);
-    }
-
-    void adjustZoom(int delta) {
-        fontPixelSize_ = std::clamp(fontPixelSize_ + delta, 10, 48);
-        applyFontToEditors();
-    }
-
-    void resetZoom() {
-        fontPixelSize_ = appConfig_.theme.editorFontSize;
-        applyFontToEditors();
-    }
-
-    void applyFontToEditors() {
-        rebuildEditorFont();
-        for (int i = 0; i < tabCount(); ++i) {
-            if (auto *ed = editorAt(i)) {
-                ed->setFont(editorFont_);
-                QFontMetrics fm(editorFont_);
-                ed->setTabStopDistance(fm.horizontalAdvance(' ') * 4);
-            }
-        }
-        saveSessionState();
     }
 
     NoteEditor *editorAt(int index) const {
@@ -1601,19 +2056,25 @@ private:
                       const QString &initialContent,
                       bool writeImmediately,
                       int insertAt = -1,
-                      const QJsonArray &colorSpans = {},
+                      const QJsonArray &styleSpans = {},
                       int activeColorSlot = 0,
-                      const QColor &activeColorFallback = {}) {
+                      const QColor &activeColorFallback = {},
+                      bool activeBold = false,
+                      bool activeItalic = false,
+                      int activeFontSize = -1) {
         auto *editor = new NoteEditor(appConfig_.theme, appConfig_.keys, editorStack_);
         editor->setFont(editorFont_);
         QFontMetrics fm(editorFont_);
         editor->setTabStopDistance(fm.horizontalAdvance(' ') * 4);
         editor->setPlainText(initialContent);
-        if (!colorSpans.isEmpty()) {
-            editor->importColorSpans(colorSpans);
+        if (!styleSpans.isEmpty()) {
+            editor->importStyleSpans(styleSpans);
         } else {
             editor->formatExistingDividers();
         }
+        int initSize = (activeFontSize > 0) ? activeFontSize : appConfig_.theme.editorFontSize;
+        editor->setFormattingState(activeBold, activeItalic, initSize);
+
         if (activeColorSlot >= 0 && activeColorSlot < 4) {
             editor->setActiveTypingColorSlot(activeColorSlot, false);
         } else if (activeColorFallback.isValid()) {
@@ -1624,12 +2085,19 @@ private:
         editor->setProperty("noteFilePath", filePath);
         editor->setProperty("noteDirty", writeImmediately);
 
-        editor->onColorModeChanged = [this](bool active) {
+        editor->onLeaderModeChanged = [this](bool active) {
             setColorDotsHighlighted(active);
+            setFormatIconsHighlighted(active);
         };
-        editor->onColorPicked = [this, editor](int, const QColor &) {
+        editor->onFormattingChanged = [this, editor]() {
+            syncFormatButtonsState();
             setDirty(editor, true);
             autoSaveTimer_->start();
+        };
+        editor->onNewTabTriggered = [this]() {
+            QTimer::singleShot(0, this, [this]() {
+                createNewTab();
+            });
         };
 
         int idx = (insertAt >= 0 && insertAt <= tabCount())
@@ -1718,9 +2186,12 @@ private:
                 closedStack_.push(ClosedNote{
                     title,
                     trashFile,
-                    ed ? ed->exportColorSpans() : QJsonArray{},
+                    ed ? ed->exportStyleSpans() : QJsonArray{},
                     ed ? ed->activeTypingColor().name(QColor::HexRgb).toUpper() : QStringLiteral("#FFFFFF"),
                     ed ? ed->activeTypingColorIndex() : 0,
+                    ed ? ed->isBoldActive() : false,
+                    ed ? ed->isItalicActive() : false,
+                    ed ? ed->activeFontSize() : appConfig_.theme.editorFontSize,
                     index});
             }
         }
@@ -1733,6 +2204,7 @@ private:
             createNewTab();
         } else {
             syncHeaderTabs();
+            syncFormatButtonsState();
             saveSessionState();
         }
     }
@@ -1750,7 +2222,16 @@ private:
             QString content = readFileContent(restoredPath);
             int targetIdx = std::clamp(item.index, 0, tabCount());
             int idx = addTabForFile(
-                restoredPath, content, false, targetIdx, item.colorSpans, item.activeColorIndex, QColor(item.activeColor));
+                restoredPath,
+                content,
+                false,
+                targetIdx,
+                item.styleSpans,
+                item.activeColorIndex,
+                QColor(item.activeColor),
+                item.activeBold,
+                item.activeItalic,
+                item.activeFontSize);
             setCurrentTabIndex(idx);
             saveSessionState();
             return;
@@ -1803,18 +2284,24 @@ private:
         ensureDirectories();
 
         QJsonArray tabsArray;
-        QJsonObject colorsMap;
+        QJsonObject spansMap;
         QJsonObject activeColorsMap;
         QJsonObject activeSlotsMap;
+        QJsonObject activeFormatMap;
         for (int i = 0; i < tabCount(); ++i) {
             QString path = filePathAt(i);
             if (!path.isEmpty()) {
                 QString fname = QFileInfo(path).fileName();
                 tabsArray.append(fname);
                 if (auto *ed = editorAt(i)) {
-                    colorsMap[fname] = ed->exportColorSpans();
+                    spansMap[fname] = ed->exportStyleSpans();
                     activeColorsMap[fname] = ed->activeTypingColor().name(QColor::HexRgb).toUpper();
                     activeSlotsMap[fname] = ed->activeTypingColorIndex();
+                    QJsonObject fObj;
+                    fObj["bold"] = ed->isBoldActive();
+                    fObj["italic"] = ed->isItalicActive();
+                    fObj["size"] = ed->activeFontSize();
+                    activeFormatMap[fname] = fObj;
                 }
             }
         }
@@ -1827,9 +2314,10 @@ private:
         }
         root["window_width"] = width();
         root["window_height"] = height();
-        root["tab_color_spans"] = colorsMap;
+        root["tab_color_spans"] = spansMap;
         root["tab_active_colors"] = activeColorsMap;
         root["tab_active_color_slots"] = activeSlotsMap;
+        root["tab_active_formats"] = activeFormatMap;
 
         QSaveFile file(sessionFilePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -1846,9 +2334,10 @@ private:
 
         QStringList orderedFiles;
         QString activeFileName;
-        QJsonObject colorsMap;
+        QJsonObject spansMap;
         QJsonObject activeColorsMap;
         QJsonObject activeSlotsMap;
+        QJsonObject activeFormatMap;
 
         QFile sessionFile(sessionFilePath());
         if (sessionFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -1860,9 +2349,10 @@ private:
                 resize(std::max(300, w), std::max(240, h));
 
                 activeFileName = obj["active_tab"].toString();
-                colorsMap = obj["tab_color_spans"].toObject();
+                spansMap = obj["tab_color_spans"].toObject();
                 activeColorsMap = obj["tab_active_colors"].toObject();
                 activeSlotsMap = obj["tab_active_color_slots"].toObject();
+                activeFormatMap = obj["tab_active_formats"].toObject();
 
                 QJsonArray arr = obj["open_tabs"].toArray();
                 for (const QJsonValue &v : arr) {
@@ -1884,10 +2374,15 @@ private:
         for (const QString &fname : orderedFiles) {
             QString fullPath = dir.filePath(fname);
             QString content = readFileContent(fullPath);
-            QJsonArray spans = colorsMap[fname].toArray();
+            QJsonArray spans = spansMap[fname].toArray();
             int slot = activeSlotsMap.contains(fname) ? activeSlotsMap[fname].toInt(0) : -1;
             QColor activeCol(activeColorsMap[fname].toString());
-            int idx = addTabForFile(fullPath, content, false, -1, spans, slot, activeCol);
+            QJsonObject fObj = activeFormatMap[fname].toObject();
+            bool b = fObj["bold"].toBool(false);
+            bool itl = fObj["italic"].toBool(false);
+            int sz = fObj["size"].toInt(appConfig_.theme.editorFontSize);
+
+            int idx = addTabForFile(fullPath, content, false, -1, spans, slot, activeCol, b, itl, sz);
             if (fname == activeFileName) {
                 activeIndex = idx;
             }
@@ -1902,6 +2397,7 @@ private:
         loadingSession_ = false;
         setCurrentTabIndex(activeIndex);
         syncHeaderTabs();
+        syncFormatButtonsState();
         saveSessionState();
     }
 
@@ -1912,6 +2408,7 @@ private:
     QWidget *centralRoot_ = nullptr;
     HeaderTabBar *headerBar_ = nullptr;
     QStackedWidget *editorStack_ = nullptr;
+    std::array<FormatIconButton *, 4> formatButtons_ = {nullptr, nullptr, nullptr, nullptr};
     std::array<ColorDotButton *, 4> colorButtons_ = {nullptr, nullptr, nullptr, nullptr};
     QList<QShortcut *> shortcuts_;
     QFileSystemWatcher *configWatcher_ = nullptr;
@@ -1928,7 +2425,24 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("mimenotes");
     QApplication::setApplicationDisplayName("Mime Notes");
+    QApplication::setDesktopFileName("mimenotes");
     QApplication::setApplicationVersion("1.0");
+
+    QIcon appIcon = QIcon::fromTheme("mimenotes");
+    if (appIcon.isNull()) {
+        QString localIcon = QDir(QCoreApplication::applicationDirPath()).filePath("mimenotes.svg");
+        if (QFileInfo::exists(localIcon)) {
+            appIcon = QIcon(localIcon);
+        } else {
+            QString userIcon = QDir::home().filePath(".local/share/icons/hicolor/scalable/apps/mimenotes.svg");
+            if (QFileInfo::exists(userIcon)) {
+                appIcon = QIcon(userIcon);
+            }
+        }
+    }
+    if (!appIcon.isNull()) {
+        app.setWindowIcon(appIcon);
+    }
 
     QCommandLineParser parser;
     parser.setApplicationDescription("Mime Notes — Minimalist plain-text tabbed notepad with automatic saving.");

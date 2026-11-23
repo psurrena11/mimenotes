@@ -1,5 +1,7 @@
 {
   "theme": "default",
+  "default_font_size": 16,
+  "font_size_step": 4,
   "notes_dir": "~/Notes",
   "keybindings": {
     "new_tab": "Ctrl+T",
@@ -17,13 +19,22 @@
     "zoom_out": "Ctrl+-",
     "zoom_reset": "Ctrl+0",
     "divider_trigger": "---",
-    "color_mode_trigger": "jj",
-    "color_mode_timeout_ms": 350,
+    "leader_trigger": "jj",
+    "leader_timeout_ms": 350,
+    "new_tab_trigger": "ff",
+    "new_tab_timeout_ms": 350,
+    "reset_format_key": "h",
     "color_keys": [
       "j",
       "k",
       "l",
       ";"
+    ],
+    "format_keys": [
+      "a",
+      "s",
+      "d",
+      "f"
     ]
   }
 }

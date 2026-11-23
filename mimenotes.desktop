@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Mime Notes
+GenericName=Text Editor
+Comment=Minimalist plain-text tabbed notepad with automatic saving
+Exec=mimenotes %F
+Icon=mimenotes
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=notes;notepad;text;editor;tabs;
+StartupNotify=true
+StartupWMClass=mimenotes
