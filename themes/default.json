@@ -1,0 +1,33 @@
+{
+  "name": "default",
+  "window": {
+    "width": 503,
+    "height": 477,
+    "background": "#212421",
+    "selection_background": "#3A423A",
+    "selection_text": "#FFFFFF",
+    "divider": "#37FFFFFF",
+    "scrollbar": "#3A3F3A"
+  },
+  "header": {
+    "font_family": "Inter",
+    "font_size": 14,
+    "font_weight": "semibold",
+    "active_tab_color": "#FFFFFF",
+    "inactive_tab_color": "#6EFFFFFF",
+    "hover_tab_color": "#BEFFFFFF",
+    "plus_color": "#FFFFFF",
+    "plus_hover_color": "#B4C9AE"
+  },
+  "editor": {
+    "font_family": "Inter",
+    "font_size": 16,
+    "font_weight": "normal"
+  },
+  "text_colors": [
+    "#FFFFFF",
+    "#B4C9AE",
+    "#C3B7DB",
+    "#A8C9DA"
+  ]
+}

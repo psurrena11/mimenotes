@@ -1,0 +1,29 @@
+{
+  "theme": "default",
+  "notes_dir": "~/Notes",
+  "keybindings": {
+    "new_tab": "Ctrl+T",
+    "new_tab_alt": "Ctrl+N",
+    "close_tab": "Ctrl+W",
+    "reopen_closed_tab": "Ctrl+Shift+T",
+    "save": "Ctrl+S",
+    "rename_tab": "F2",
+    "rename_tab_alt": "Ctrl+R",
+    "next_tab": "Ctrl+Tab",
+    "next_tab_alt": "Ctrl+PgDown",
+    "prev_tab": "Ctrl+Shift+Tab",
+    "prev_tab_alt": "Ctrl+PgUp",
+    "zoom_in": "Ctrl+=",
+    "zoom_out": "Ctrl+-",
+    "zoom_reset": "Ctrl+0",
+    "divider_trigger": "---",
+    "color_mode_trigger": "jj",
+    "color_mode_timeout_ms": 350,
+    "color_keys": [
+      "j",
+      "k",
+      "l",
+      ";"
+    ]
+  }
+}

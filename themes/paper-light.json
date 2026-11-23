@@ -1,0 +1,33 @@
+{
+  "name": "paper-light",
+  "window": {
+    "width": 503,
+    "height": 477,
+    "background": "#F7F4EE",
+    "selection_background": "#DCD6C8",
+    "selection_text": "#232323",
+    "divider": "#33232323",
+    "scrollbar": "#C8C2B4"
+  },
+  "header": {
+    "font_family": "Inter",
+    "font_size": 14,
+    "font_weight": "semibold",
+    "active_tab_color": "#232323",
+    "inactive_tab_color": "#77232323",
+    "hover_tab_color": "#BB232323",
+    "plus_color": "#232323",
+    "plus_hover_color": "#4A7C59"
+  },
+  "editor": {
+    "font_family": "Inter",
+    "font_size": 16,
+    "font_weight": "normal"
+  },
+  "text_colors": [
+    "#232323",
+    "#4A7C59",
+    "#7A5C9E",
+    "#3B7A9E"
+  ]
+}

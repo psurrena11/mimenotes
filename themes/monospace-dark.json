@@ -1,0 +1,33 @@
+{
+  "name": "monospace-dark",
+  "window": {
+    "width": 503,
+    "height": 477,
+    "background": "#1B1D1E",
+    "selection_background": "#33383B",
+    "selection_text": "#FFFFFF",
+    "divider": "#37FFFFFF",
+    "scrollbar": "#33383B"
+  },
+  "header": {
+    "font_family": "JetBrainsMono Nerd Font",
+    "font_size": 13,
+    "font_weight": "semibold",
+    "active_tab_color": "#F8F8F2",
+    "inactive_tab_color": "#6EF8F8F2",
+    "hover_tab_color": "#BEF8F8F2",
+    "plus_color": "#F8F8F2",
+    "plus_hover_color": "#A6E22E"
+  },
+  "editor": {
+    "font_family": "JetBrainsMono Nerd Font",
+    "font_size": 16,
+    "font_weight": "normal"
+  },
+  "text_colors": [
+    "#F8F8F2",
+    "#A6E22E",
+    "#AE81FF",
+    "#66D9EF"
+  ]
+}

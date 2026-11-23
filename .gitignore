@@ -1,0 +1,33 @@
+# Compiled binary
+/notes
+
+# C++ object and build files
+*.o
+*.obj
+*.so
+*.a
+*.out
+build/
+
+# Qt / qmake / CMake artifacts
+Makefile.Debug
+Makefile.Release
+*.pro.user
+*.pro.user.*
+*.qmake.stash
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+CMakeLists.txt.user*
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Editor / OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
