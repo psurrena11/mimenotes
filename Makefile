@@ -1,9 +1,9 @@
 CXX        := g++
 CXXFLAGS   := -std=c++17 -O2 -Wall -Wextra -fPIC $(shell pkg-config --cflags Qt6Widgets)
 LDFLAGS    := $(shell pkg-config --libs Qt6Widgets)
-TARGET     := notes
+TARGET     := mimenotes
 PREFIX     ?= $(HOME)/.local
-CONFIG_DIR ?= $(HOME)/.config/notes
+CONFIG_DIR ?= $(HOME)/.config/mimenotes
 
 .PHONY: all clean install uninstall
 
@@ -23,4 +23,4 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) notes

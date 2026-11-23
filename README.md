@@ -1,4 +1,4 @@
-# Notes
+# Mime Notes
 
 A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching the Figma design specification (`503×477`, `#212421` background).
 
@@ -20,10 +20,10 @@ A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching
 
 ## Configuration (`config.json`)
 
-The app looks for `config.json` in:
-1. `--config <path>` (or `$NOTES_CONFIG`)
+Mime Notes looks for `config.json` in:
+1. `--config <path>` (or `$MIMENOTES_CONFIG`)
 2. `./config.json` (current directory or binary directory)
-3. `~/.config/notes/config.json`
+3. `~/.config/mimenotes/config.json`
 
 Example [config.json](file:///home/psurrena/Projects/notes/config.json):
 
@@ -65,13 +65,13 @@ Themes live in the `themes/` folder and control window dimensions, background/se
 Switch themes either by changing `"theme"` in `config.json` or passing `--theme <name>`:
 
 ```bash
-./notes --theme monospace-dark
-./notes --theme paper-light
+./mimenotes --theme monospace-dark
+./mimenotes --theme paper-light
 ```
 
 ## Build & Run
 
 ```bash
 make
-./notes
+./mimenotes
 ```

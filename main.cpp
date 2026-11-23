@@ -250,20 +250,24 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
     AppConfig cfg;
 
     // Locate config.json:
-    // 1. explicit --config <path> or $NOTES_CONFIG
+    // 1. explicit --config <path> or $MIMENOTES_CONFIG / $NOTES_CONFIG
     // 2. ./config.json in current directory
     // 3. <appBinaryDir>/config.json
-    // 4. ~/.config/notes/config.json
+    // 4. ~/.config/mimenotes/config.json
     QStringList candidates;
     if (!explicitConfigPath.isEmpty()) {
         candidates << expandTilde(explicitConfigPath);
     }
-    QString envCfg = qEnvironmentVariable("NOTES_CONFIG");
+    QString envCfg = qEnvironmentVariable("MIMENOTES_CONFIG");
+    if (envCfg.isEmpty()) {
+        envCfg = qEnvironmentVariable("NOTES_CONFIG");
+    }
     if (!envCfg.isEmpty()) {
         candidates << expandTilde(envCfg);
     }
     candidates << QDir::current().filePath("config.json");
     candidates << QDir(QCoreApplication::applicationDirPath()).filePath("config.json");
+    candidates << QDir::home().filePath(".config/mimenotes/config.json");
     candidates << QDir::home().filePath(".config/notes/config.json");
 
     for (const QString &cand : candidates) {
@@ -343,6 +347,7 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
     }
     themeCandidates << QDir::current().filePath("themes/" + themeNameClean + ".json");
     themeCandidates << QDir(QCoreApplication::applicationDirPath()).filePath("themes/" + themeNameClean + ".json");
+    themeCandidates << QDir::home().filePath(".config/mimenotes/themes/" + themeNameClean + ".json");
     themeCandidates << QDir::home().filePath(".config/notes/themes/" + themeNameClean + ".json");
 
     for (const QString &tc : themeCandidates) {
@@ -1197,7 +1202,7 @@ public:
         : appConfig_(appConfig),
           explicitConfigPath_(explicitConfigPath),
           themeOverride_(themeOverride) {
-        setWindowTitle("Notes");
+        setWindowTitle("Mime Notes");
 
         if (!explicitNotesDir.isEmpty()) {
             notesDir_ = QDir::cleanPath(expandTilde(explicitNotesDir));
@@ -1921,23 +1926,24 @@ private:
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    QApplication::setApplicationName("notes");
+    QApplication::setApplicationName("mimenotes");
+    QApplication::setApplicationDisplayName("Mime Notes");
     QApplication::setApplicationVersion("1.0");
 
     QCommandLineParser parser;
-    parser.setApplicationDescription("Minimalist plain-text tabbed notepad with automatic saving.");
+    parser.setApplicationDescription("Mime Notes — Minimalist plain-text tabbed notepad with automatic saving.");
     parser.addHelpOption();
     parser.addVersionOption();
 
     QCommandLineOption dirOption(
         QStringList() << "d" << "dir",
-        "Directory where note .txt files are stored (default: from config.json, $NOTES_DIR, or ~/Notes).",
+        "Directory where note .txt files are stored (default: from config.json, $MIMENOTES_DIR, or ~/Notes).",
         "path");
     parser.addOption(dirOption);
 
     QCommandLineOption configOption(
         QStringList() << "c" << "config",
-        "Path to config.json (default: ./config.json or ~/.config/notes/config.json).",
+        "Path to config.json (default: ./config.json or ~/.config/mimenotes/config.json).",
         "file");
     parser.addOption(configOption);
 
@@ -1959,6 +1965,9 @@ int main(int argc, char *argv[]) {
     QString explicitNotesDir = parser.value(dirOption);
     if (explicitNotesDir.isEmpty() && !parser.positionalArguments().isEmpty()) {
         explicitNotesDir = parser.positionalArguments().first();
+    }
+    if (explicitNotesDir.isEmpty()) {
+        explicitNotesDir = qEnvironmentVariable("MIMENOTES_DIR");
     }
     if (explicitNotesDir.isEmpty()) {
         explicitNotesDir = qEnvironmentVariable("NOTES_DIR");
