@@ -1,0 +1,14 @@
+<RCC>
+    <qresource prefix="/">
+        <file>mimenotes.svg</file>
+        <file>config.json</file>
+        <file>assets/icon_add.svg</file>
+        <file>assets/icon_bold.svg</file>
+        <file>assets/icon_italic.svg</file>
+        <file>assets/icon_up.svg</file>
+        <file>assets/icon_down.svg</file>
+        <file>themes/default.json</file>
+        <file>themes/monospace-dark.json</file>
+        <file>themes/paper-light.json</file>
+    </qresource>
+</RCC>

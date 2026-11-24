@@ -1,6 +1,6 @@
 # Mime Notes
 
-A minimalist, ultra-lightweight Linux desktop plain-text notepad built natively with C++17 and Qt6 (~31 MB PSS memory footprint—roughly 8–20× lighter than Electron/web-based note apps), matching the Figma design specification (`484×467`, `#212421` background, `20px` outer frame padding).
+A minimalist, ultra-lightweight cross-platform desktop plain-text notepad built natively with C++17 and Qt6 for Linux, macOS, and Windows (~31 MB PSS memory footprint on Linux—roughly 8–20× lighter than Electron/web-based note apps), matching the Figma design specification (`484×467`, `#212421` background, `20px` outer frame padding).
 
 ## Features
 
@@ -41,8 +41,11 @@ A minimalist, ultra-lightweight Linux desktop plain-text notepad built natively 
 
 Mime Notes looks for `config.json` in:
 1. `--config <path>` (or `$MIMENOTES_CONFIG`)
-2. `./config.json` (current directory or binary directory)
-3. `~/.config/mimenotes/config.json`
+2. `./config.json` (current directory or binary directory, for portable setups)
+3. Your OS user config directory (auto-created with default `config.json` and `themes/` on first launch):
+   - **Linux**: `~/.config/mimenotes/config.json`
+   - **macOS**: `~/Library/Application Support/mimenotes/config.json`
+   - **Windows**: `%LOCALAPPDATA%\mimenotes\config.json`
 
 Example [config.json](file:///home/psurrena/Projects/notes/config.json):
 
@@ -121,11 +124,25 @@ Ensure a C++17 compiler (`g++`), `make`, `pkg-config`, and Qt6 Widgets developme
 
 ### 2. Build & Run Locally
 
+**Linux (`make`)**:
 ```bash
 git clone git@github.com:psurrena11/mimenotes.git
 cd mimenotes
 make
 ./mimenotes
+```
+
+**Cross-platform (`CMake` — Linux, macOS, Windows)**:
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+Prebuilt binaries for **Linux** (`.tar.gz`), **macOS** (`.dmg`), and **Windows** (`.zip`) are automatically compiled by GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) and published to **GitHub Releases** whenever a version tag (`v*`) is pushed:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 ### 3. Install as a Desktop GUI Application

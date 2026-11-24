@@ -1,0 +1,155 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Linux (x64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt6 and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-svg-dev
+
+      - name: Configure and build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Package Linux archive
+        run: |
+          mkdir -p dist/mimenotes-linux-x64
+          cp build/mimenotes mimenotes.desktop mimenotes.svg README.md LICENSE dist/mimenotes-linux-x64/
+          tar -C dist -czf MimeNotes-Linux-x64.tar.gz mimenotes-linux-x64
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MimeNotes-Linux-x64
+          path: MimeNotes-Linux-x64.tar.gz
+
+  build-macos:
+    name: macOS (arm64)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt6 and icon tools
+        run: |
+          brew install qt librsvg
+
+      - name: Generate macOS app icon (.icns)
+        run: |
+          mkdir -p build/mimenotes.iconset
+          for sz in 16 32 128 256 512; do
+            rsvg-convert -w $sz -h $sz mimenotes.svg -o build/mimenotes.iconset/icon_${sz}x${sz}.png
+            sz2=$((sz * 2))
+            rsvg-convert -w $sz2 -h $sz2 mimenotes.svg -o build/mimenotes.iconset/icon_${sz}x${sz}@2x.png
+          done
+          iconutil -c icns build/mimenotes.iconset -o build/mimenotes.icns
+
+      - name: Configure and build
+        run: |
+          QT_PREFIX="$(brew --prefix qt)"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_PREFIX"
+          cmake --build build --parallel
+
+      - name: Bundle Qt frameworks and create DMG
+        run: |
+          QT_PREFIX="$(brew --prefix qt)"
+          "$QT_PREFIX/bin/macdeployqt" "build/Mime Notes.app"
+          mkdir -p dist/dmg
+          cp -R "build/Mime Notes.app" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname "Mime Notes" -srcfolder dist/dmg -ov -format UDZO MimeNotes-macOS-arm64.dmg
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MimeNotes-macOS-arm64
+          path: MimeNotes-macOS-arm64.dmg
+
+  build-windows:
+    name: Windows (x64)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          cache: 'true'
+
+      - name: Generate Windows icon (.ico)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          if (Get-Command magick -ErrorAction SilentlyContinue) {
+            magick -background none mimenotes.svg -define icon:auto-resize=256,128,64,48,32,16 build/mimenotes.ico
+            Set-Content -Path build/mimenotes.rc -Value 'IDI_ICON1 ICON "mimenotes.ico"'
+          }
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="$env:Qt6_DIR"
+          cmake --build build --config Release --parallel
+
+      - name: Bundle Qt DLLs and package ZIP
+        shell: pwsh
+        run: |
+          $stage = "dist/MimeNotes"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "build/Release/mimenotes.exe" "$stage/mimenotes.exe"
+          Copy-Item "README.md", "LICENSE" "$stage/"
+          & "$env:Qt6_DIR/bin/windeployqt.exe" --release --no-translations "$stage/mimenotes.exe"
+          Compress-Archive -Path "$stage/*" -DestinationPath "MimeNotes-Windows-x64.zip" -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MimeNotes-Windows-x64
+          path: MimeNotes-Windows-x64.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-linux, build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/MimeNotes-Linux-x64.tar.gz
+            artifacts/MimeNotes-macOS-arm64.dmg
+            artifacts/MimeNotes-Windows-x64.zip

@@ -31,6 +31,7 @@
 #include <QShortcut>
 #include <QStack>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QSvgRenderer>
 #include <QTextBlock>
 #include <QTextCharFormat>
@@ -197,11 +198,55 @@ QColor contrastTextColor(const QColor &bg) {
     return (contrastBlack >= contrastWhite) ? QColor("#000000") : QColor("#FFFFFF");
 }
 
+QString userConfigDirectory() {
+#ifdef Q_OS_MACOS
+    // ~/Library/Application Support/mimenotes
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+#else
+    // Linux: ~/.config/mimenotes  |  Windows: %LOCALAPPDATA%\mimenotes
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+#endif
+    if (dir.isEmpty()) {
+        dir = QDir::home().filePath(QStringLiteral(".config/mimenotes"));
+    }
+    return dir;
+}
+
+void copyResourceIfMissing(const QString &resourcePath, const QString &destPath) {
+    if (QFileInfo::exists(destPath) || !QFile::exists(resourcePath)) {
+        return;
+    }
+    QDir().mkpath(QFileInfo(destPath).absolutePath());
+    if (QFile::copy(resourcePath, destPath)) {
+        QFile::setPermissions(destPath,
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                              QFileDevice::ReadGroup | QFileDevice::ReadOther);
+    }
+}
+
+void bootstrapUserConfigIfMissing() {
+    QString cfgDir = userConfigDirectory();
+    if (cfgDir.isEmpty()) {
+        return;
+    }
+    QDir dir(cfgDir);
+    dir.mkpath(QStringLiteral("themes"));
+    copyResourceIfMissing(QStringLiteral(":/config.json"), dir.filePath(QStringLiteral("config.json")));
+
+    QDir resThemes(QStringLiteral(":/themes"));
+    const QStringList themeFiles = resThemes.entryList(QStringList() << QStringLiteral("*.json"), QDir::Files);
+    for (const QString &tf : themeFiles) {
+        copyResourceIfMissing(QStringLiteral(":/themes/") + tf, dir.filePath(QStringLiteral("themes/") + tf));
+    }
+}
+
 QString resolveAssetSvgPath(const QString &fileName) {
     QStringList candidates;
     candidates << QDir::current().filePath("assets/" + fileName);
     candidates << QDir(QCoreApplication::applicationDirPath()).filePath("assets/" + fileName);
+    candidates << QDir(userConfigDirectory()).filePath("assets/" + fileName);
     candidates << QDir::home().filePath(".config/mimenotes/assets/" + fileName);
+    candidates << (QStringLiteral(":/assets/") + fileName);
     for (const QString &cand : candidates) {
         if (QFileInfo::exists(cand)) {
             return cand;
@@ -246,6 +291,8 @@ QFont makeFontWithFallback(const QString &primaryFamily, int pixelSize, QFont::W
         families.append(primaryFamily.trimmed());
     }
     families << QStringLiteral("Inter")
+             << QStringLiteral("SF Pro Text")
+             << QStringLiteral("Segoe UI")
              << QStringLiteral("Adwaita Sans")
              << QStringLiteral("Noto Sans")
              << QStringLiteral("Sans Serif");
@@ -269,11 +316,15 @@ QString expandTilde(const QString &path) {
 }
 
 QString defaultNotesDirectory() {
-    QString docsPath = QDir::home().filePath("Documents");
-    if (QDir(docsPath).exists()) {
-        return QDir(docsPath).filePath("Mimenotes");
+    QString docsPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (!docsPath.isEmpty() && QDir(docsPath).exists()) {
+        return QDir(docsPath).filePath(QStringLiteral("Mimenotes"));
     }
-    return QDir::home().filePath("Mimenotes");
+    QString homeDocs = QDir::home().filePath(QStringLiteral("Documents"));
+    if (QDir(homeDocs).exists()) {
+        return QDir(homeDocs).filePath(QStringLiteral("Mimenotes"));
+    }
+    return QDir::home().filePath(QStringLiteral("Mimenotes"));
 }
 
 QString resolveNotesDirectory(const QString &rawConfigPath) {
@@ -292,6 +343,11 @@ QString sanitizeTitle(const QString &raw) {
     s.replace('/', '-');
     s.replace('\\', '-');
     s.replace('\0', "");
+#ifdef Q_OS_WIN
+    for (QChar ch : QStringLiteral(":*?\"<>|")) {
+        s.replace(ch, '-');
+    }
+#endif
     while (s.startsWith('.')) {
         s.remove(0, 1);
     }
@@ -300,6 +356,11 @@ QString sanitizeTitle(const QString &raw) {
         s.chop(4);
         s = s.trimmed();
     }
+#ifdef Q_OS_WIN
+    while (s.endsWith('.') || s.endsWith(' ')) {
+        s.chop(1);
+    }
+#endif
     return s;
 }
 
@@ -403,8 +464,10 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
     if (!envCfg.isEmpty()) {
         candidates << expandTilde(envCfg);
     }
+    const QString userCfgDir = userConfigDirectory();
     candidates << QDir::current().filePath("config.json");
     candidates << QDir(QCoreApplication::applicationDirPath()).filePath("config.json");
+    candidates << QDir(userCfgDir).filePath("config.json");
     candidates << QDir::home().filePath(".config/mimenotes/config.json");
     candidates << QDir::home().filePath(".config/notes/config.json");
 
@@ -415,10 +478,24 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
         }
     }
 
+    if (cfg.configFilePath.isEmpty()) {
+        bootstrapUserConfigIfMissing();
+        QString bootstrapped = QDir(userCfgDir).filePath("config.json");
+        if (QFileInfo::exists(bootstrapped)) {
+            cfg.configFilePath = QFileInfo(bootstrapped).absoluteFilePath();
+        } else if (QFile::exists(QStringLiteral(":/config.json"))) {
+            cfg.configFilePath = QStringLiteral(":/config.json");
+        }
+    }
+
     int configDefaultFontSize = -1;
     QColor configActiveToolColor;
     if (!cfg.configFilePath.isEmpty()) {
-        cfg.themesDirPath = QFileInfo(cfg.configFilePath).absoluteDir().filePath("themes");
+        if (cfg.configFilePath.startsWith(QLatin1String(":/"))) {
+            cfg.themesDirPath = QDir(userCfgDir).filePath("themes");
+        } else {
+            cfg.themesDirPath = QFileInfo(cfg.configFilePath).absoluteDir().filePath("themes");
+        }
         QFile file(cfg.configFilePath);
         if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
             QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
@@ -541,12 +618,14 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
     }
     themeCandidates << QDir::current().filePath("themes/" + themeNameClean + ".json");
     themeCandidates << QDir(QCoreApplication::applicationDirPath()).filePath("themes/" + themeNameClean + ".json");
+    themeCandidates << QDir(userCfgDir).filePath("themes/" + themeNameClean + ".json");
     themeCandidates << QDir::home().filePath(".config/mimenotes/themes/" + themeNameClean + ".json");
     themeCandidates << QDir::home().filePath(".config/notes/themes/" + themeNameClean + ".json");
+    themeCandidates << (QStringLiteral(":/themes/") + themeNameClean + QStringLiteral(".json"));
 
     for (const QString &tc : themeCandidates) {
         if (QFileInfo::exists(tc)) {
-            cfg.themeFilePath = QFileInfo(tc).absoluteFilePath();
+            cfg.themeFilePath = tc.startsWith(QLatin1String(":/")) ? tc : QFileInfo(tc).absoluteFilePath();
             cfg.theme = loadThemeFromFile(cfg.themeFilePath);
             break;
         }
@@ -2520,10 +2599,14 @@ private:
         if (!current.isEmpty()) {
             configWatcher_->removePaths(current);
         }
-        if (!appConfig_.configFilePath.isEmpty() && QFileInfo::exists(appConfig_.configFilePath)) {
+        if (!appConfig_.configFilePath.isEmpty() &&
+            !appConfig_.configFilePath.startsWith(QLatin1String(":/")) &&
+            QFileInfo::exists(appConfig_.configFilePath)) {
             configWatcher_->addPath(appConfig_.configFilePath);
         }
-        if (!appConfig_.themeFilePath.isEmpty() && QFileInfo::exists(appConfig_.themeFilePath)) {
+        if (!appConfig_.themeFilePath.isEmpty() &&
+            !appConfig_.themeFilePath.startsWith(QLatin1String(":/")) &&
+            QFileInfo::exists(appConfig_.themeFilePath)) {
             configWatcher_->addPath(appConfig_.themeFilePath);
         }
     }
@@ -3242,6 +3325,8 @@ int main(int argc, char *argv[]) {
             QString userIcon = QDir::home().filePath(".local/share/icons/hicolor/scalable/apps/mimenotes.svg");
             if (QFileInfo::exists(userIcon)) {
                 appIcon = QIcon(userIcon);
+            } else if (QFile::exists(QStringLiteral(":/mimenotes.svg"))) {
+                appIcon = QIcon(QStringLiteral(":/mimenotes.svg"));
             }
         }
     }
@@ -3256,13 +3341,13 @@ int main(int argc, char *argv[]) {
 
     QCommandLineOption dirOption(
         QStringList() << "d" << "dir",
-        "Directory where note .txt files are stored (default: ~/Documents/Mimenotes or ~/Mimenotes).",
+        "Directory where note .txt files are stored (default: Documents/Mimenotes).",
         "path");
     parser.addOption(dirOption);
 
     QCommandLineOption configOption(
         QStringList() << "c" << "config",
-        "Path to config.json (default: ./config.json or ~/.config/mimenotes/config.json).",
+        "Path to config.json (default: ./config.json or OS user config directory).",
         "file");
     parser.addOption(configOption);
 

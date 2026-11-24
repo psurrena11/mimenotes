@@ -1,18 +1,24 @@
-CXX        := g++
-CXXFLAGS   := -std=c++17 -O2 -Wall -Wextra -fPIC $(shell pkg-config --cflags Qt6Widgets Qt6Svg)
-LDFLAGS    := $(shell pkg-config --libs Qt6Widgets Qt6Svg)
-TARGET     := mimenotes
-PREFIX     ?= $(HOME)/.local
-CONFIG_DIR ?= $(HOME)/.config/mimenotes
-APPS_DIR   ?= $(PREFIX)/share/applications
-ICONS_DIR  ?= $(PREFIX)/share/icons/hicolor/scalable/apps
+CXX         := g++
+CXXFLAGS    := -std=c++17 -O2 -Wall -Wextra -fPIC $(shell pkg-config --cflags Qt6Widgets Qt6Svg)
+LDFLAGS     := $(shell pkg-config --libs Qt6Widgets Qt6Svg)
+QT6_LIBEXEC := $(shell pkg-config --variable=libexecdir Qt6Core 2>/dev/null)
+RCC         ?= $(firstword $(wildcard $(QT6_LIBEXEC)/rcc /usr/lib/qt6/rcc /usr/lib/qt6/libexec/rcc /usr/lib64/qt6/libexec/rcc) $(shell command -v rcc-qt6 2>/dev/null || command -v rcc 2>/dev/null))
+TARGET      := mimenotes
+QRC_DEPS    := resources.qrc mimenotes.svg config.json $(wildcard assets/*.svg themes/*.json)
+PREFIX      ?= $(HOME)/.local
+CONFIG_DIR  ?= $(HOME)/.config/mimenotes
+APPS_DIR    ?= $(PREFIX)/share/applications
+ICONS_DIR   ?= $(PREFIX)/share/icons/hicolor/scalable/apps
 
 .PHONY: all clean install uninstall
 
 all: $(TARGET)
 
-$(TARGET): main.cpp
-	$(CXX) $(CXXFLAGS) -o $(TARGET) main.cpp $(LDFLAGS)
+qrc_resources.cpp: $(QRC_DEPS)
+	$(RCC) --name resources -o qrc_resources.cpp resources.qrc
+
+$(TARGET): main.cpp qrc_resources.cpp
+	$(CXX) $(CXXFLAGS) -o $(TARGET) main.cpp qrc_resources.cpp $(LDFLAGS)
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/bin
@@ -36,4 +42,4 @@ uninstall:
 	-update-desktop-database $(DESTDIR)$(APPS_DIR) 2>/dev/null || true
 
 clean:
-	rm -f $(TARGET) notes
+	rm -f $(TARGET) notes qrc_resources.cpp
