@@ -1,72 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <!-- App icon rounded square background -->
-  <rect x="6" y="6" width="116" height="116" rx="26" fill="#212421" stroke="#343834" stroke-width="2"/>
-
-  <!-- Striped mime shirt collar hint at bottom -->
-  <g clip-path="url(#collarClip)">
-    <defs>
-      <clipPath id="collarClip">
-        <path d="M 34 106 C 34 94, 94 94, 94 106 L 98 116 L 30 116 Z"/>
-      </clipPath>
-    </defs>
-    <rect x="28" y="92" width="72" height="26" fill="#FFFFFF"/>
-    <rect x="28" y="97" width="72" height="4" fill="#212421"/>
-    <rect x="28" y="105" width="72" height="4" fill="#212421"/>
-    <rect x="28" y="113" width="72" height="4" fill="#212421"/>
-  </g>
-
-  <!-- Red/Pastel neck scarf knot -->
-  <path d="M 55 96 Q 64 102 73 96 L 70 103 Q 64 99 58 103 Z" fill="#C3B7DB"/>
-
-  <!-- Mime white painted face -->
-  <path d="M 35 54 C 35 34, 93 34, 93 54 C 93 78, 80 96, 64 96 C 48 96, 35 78, 35 54 Z" fill="#FFFFFF"/>
-
-  <!-- Subtle face shading on right cheek -->
-  <path d="M 64 38 C 84 38, 93 46, 93 54 C 93 78, 80 96, 64 96 C 75 92, 84 76, 84 54 C 84 44, 76 39, 64 38 Z" fill="#E8ECE8"/>
-
-  <!-- Tilted French mime beret -->
-  <!-- Beret stem/tip -->
-  <path d="M 62 17 C 64 12, 69 12, 70 16" stroke="#151715" stroke-width="3.5" stroke-linecap="round" fill="none"/>
-  <!-- Main beret crown tilted left-to-right -->
-  <path d="M 24 44 C 18 30, 40 16, 67 17 C 92 18, 106 27, 101 39 C 97 46, 84 44, 64 43 C 45 42, 31 46, 24 44 Z" fill="#151715"/>
-  <!-- Beret headband -->
-  <path d="M 33 44 C 46 39, 80 39, 94 45 C 94 49, 92 50, 89 49 C 76 44, 50 44, 36 49 C 33 50, 32 48, 33 44 Z" fill="#2A2E2A"/>
-  <!-- Beret highlight -->
-  <path d="M 34 32 C 46 23, 70 22, 88 28" stroke="#3A3F3A" stroke-width="2.5" stroke-linecap="round" fill="none"/>
-
-  <!-- High arched mime eyebrows -->
-  <path d="M 43 52 Q 50 45 57 52" stroke="#212421" stroke-width="2.6" stroke-linecap="round" fill="none"/>
-  <path d="M 71 52 Q 78 45 85 52" stroke="#212421" stroke-width="2.6" stroke-linecap="round" fill="none"/>
-
-  <!-- Classic mime vertical diamond eye paint (top & bottom points) -->
-  <!-- Left eye top spike -->
-  <polygon points="50,51 47.5,57 52.5,57" fill="#212421"/>
-  <!-- Left eye bottom diamond/teardrop -->
-  <polygon points="47.5,65 52.5,65 50,73" fill="#212421"/>
-  <polygon points="50,75 48.2,78.5 50,82 51.8,78.5" fill="#A8C9DA"/>
-
-  <!-- Right eye top spike -->
-  <polygon points="78,51 75.5,57 80.5,57" fill="#212421"/>
-  <!-- Right eye bottom diamond/teardrop -->
-  <polygon points="75.5,65 80.5,65 78,73" fill="#212421"/>
-
-  <!-- Mime eyes -->
-  <ellipse cx="50" cy="61" rx="4.2" ry="4.5" fill="#212421"/>
-  <circle cx="48.6" cy="59.6" r="1.3" fill="#FFFFFF"/>
-
-  <ellipse cx="78" cy="61" rx="4.2" ry="4.5" fill="#212421"/>
-  <circle cx="76.6" cy="59.6" r="1.3" fill="#FFFFFF"/>
-
-  <!-- Subtle pastel cheek blush circles matching app palette -->
-  <circle cx="42" cy="73" r="4" fill="#B4C9AE" fill-opacity="0.65"/>
-  <circle cx="86" cy="73" r="4" fill="#C3B7DB" fill-opacity="0.65"/>
-
-  <!-- Classic mime painted cupid's-bow lips / expression -->
-  <path d="M 57 83 Q 61 80 64 82.5 Q 67 80 71 83 Q 67.5 87.5 64 87.5 Q 60.5 87.5 57 83 Z" fill="#212421"/>
-
-  <!-- Four signature color dots at bottom-right corner of badge -->
-  <circle cx="76" cy="110" r="3" fill="#FFFFFF"/>
-  <circle cx="86" cy="110" r="3" fill="#B4C9AE"/>
-  <circle cx="96" cy="110" r="3" fill="#C3B7DB"/>
-  <circle cx="106" cy="110" r="3" fill="#A8C9DA"/>
+<svg width="89" height="89" viewBox="0 0 89 89" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="89" height="89" fill="#F5F5F5"/>
+<g id="app icon">
+<rect width="89" height="89" fill="#212421"/>
+<circle id="Ellipse 7" cx="45" cy="31" r="27" fill="white"/>
+<circle id="Ellipse 8" cx="45" cy="48" r="5" fill="#FF8FBE"/>
+<rect id="Rectangle 3" x="30" y="63" width="30" height="4" fill="#D9D9D9"/>
+<rect id="Rectangle 4" x="25" y="73" width="40" height="4" fill="#D9D9D9"/>
+<rect id="Rectangle 5" x="20" y="82" width="50" height="4" fill="#D9D9D9"/>
+<circle id="Ellipse 9" cx="33" cy="27" r="7" fill="#212421"/>
+<circle id="Ellipse 10" cx="57" cy="27" r="7" fill="#212421"/>
+<path id="Vector 1" d="M74.5 18C61.3 17.2 35 11 23.5 8L32.5 2.5H55L74.5 9.5C80 12.6667 87.7 18.8 74.5 18Z" fill="#212421"/>
+</g>
 </svg>

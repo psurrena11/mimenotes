@@ -1,18 +1,18 @@
 # Mime Notes
 
-A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching the Figma design specification (`503×477`, `#212421` background).
+A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching the Figma design specification (`484×467`, `#212421` background, `20px` outer frame padding).
 
 ## Features
 
 - **Clean layout & colors** (`themes/default.json`):
-  - `503 × 477` window size with `#212421` background.
-  - Top bar with `14px` Semi-Bold tabs (`x = 20, y = 10`) and `+` button (`x = 479, y = 9`).
-  - **Bottom-left formatting bar**: 4 icons (`Bold`, `Italic`, `Up Arrow`, `Down Arrow`) for toggling bold/italic and increasing/decreasing font size by `4px` (configurable via `"font_size_step"`).
-  - **Bottom-right color & highlighter swatches**: Four `12 × 12` swatches spaced `16px` apart (circles in text color mode, squares in highlighter mode, with a centered black dot marking the active swatch):
+  - `484 × 467` window size with `#212421` background and `20px` outer frame padding.
+  - Top bar (`y = 20`) with `14px` Semi-Bold active tab, `50%` opacity Regular inactive tabs (`20px` gap), and `14 × 14` SVG `+` icon.
+  - **Bottom-left formatting bar**: 4 SVG icons (`Bold` `9×12`, `Italic` `12×12`, `Up Arrow` `9×12`, `Down Arrow` `8×12`, `20px` gap) for toggling bold/italic and increasing/decreasing font size by `4px` (configurable via `"font_size_step"`).
+  - **Bottom-right color & highlighter swatches**: Four `12 × 12` swatches spaced `16px` apart (circles in text color mode, squares in highlighter mode, with a centered `#212421` dot marking the active swatch):
     1. `#FFFFFF` (White)
-    2. `#B4C9AE` (Sage Green)
-    3. `#C3B7DB` (Soft Lavender)
-    4. `#A8C9DA` (Sky Blue)
+    2. `#FF8FBE` (Pink)
+    3. `#F4D76E` (Warm Yellow)
+    4. `#AAFFE4` (Mint / Bright Aqua)
 - **Home-row leader commands (`jj`), tab commands (`ff`), delete line (`dd`), & quick search (`//`)**:
   - Type `jj` quickly followed by:
     - `a` → Toggle **Bold**
@@ -20,9 +20,9 @@ A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching
     - `d` → Increase font size (`+4px`)
     - `f` → Decrease font size (`-4px`)
     - `j` → Color 1 (`#FFFFFF` White)
-    - `k` → Color 2 (`#B4C9AE` Sage Green)
-    - `l` → Color 3 (`#C3B7DB` Soft Lavender)
-    - `;` → Color 4 (`#A8C9DA` Sky Blue)
+    - `k` → Color 2 (`#FF8FBE` Pink)
+    - `l` → Color 3 (`#F4D76E` Warm Yellow)
+    - `;` → Color 4 (`#AAFFE4` Mint)
     - `h` → **Reset** formatting (`16px`, `#FFFFFF` White, no bold/italic/highlight)
     - `u` → Toggle **Highlighter Mode** (swatches turn into squares; text color automatically switches between `#000000` and `#FFFFFF` based on WCAG contrast ratio)
   - Type `ff` quickly followed by:
@@ -107,15 +107,15 @@ Ensure a C++17 compiler (`g++`), `make`, `pkg-config`, and Qt6 Widgets developme
 
 - **Arch Linux**:
   ```bash
-  sudo pacman -S base-devel qt6-base
+  sudo pacman -S base-devel qt6-base qt6-svg
   ```
 - **Ubuntu / Debian**:
   ```bash
-  sudo apt install build-essential pkg-config qt6-base-dev
+  sudo apt install build-essential pkg-config qt6-base-dev qt6-svg-dev
   ```
 - **Fedora**:
   ```bash
-  sudo dnf install gcc-c++ make pkgconf-pkg-config qt6-qtbase-devel
+  sudo dnf install gcc-c++ make pkgconf-pkg-config qt6-qtbase-devel qt6-qtsvg-devel
   ```
 
 ### 2. Build & Run Locally

@@ -1,6 +1,6 @@
 CXX        := g++
-CXXFLAGS   := -std=c++17 -O2 -Wall -Wextra -fPIC $(shell pkg-config --cflags Qt6Widgets)
-LDFLAGS    := $(shell pkg-config --libs Qt6Widgets)
+CXXFLAGS   := -std=c++17 -O2 -Wall -Wextra -fPIC $(shell pkg-config --cflags Qt6Widgets Qt6Svg)
+LDFLAGS    := $(shell pkg-config --libs Qt6Widgets Qt6Svg)
 TARGET     := mimenotes
 PREFIX     ?= $(HOME)/.local
 CONFIG_DIR ?= $(HOME)/.config/mimenotes
@@ -18,8 +18,10 @@ install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 	install -d $(DESTDIR)$(CONFIG_DIR)/themes
+	install -d $(DESTDIR)$(CONFIG_DIR)/assets
 	install -m 644 config.json $(DESTDIR)$(CONFIG_DIR)/config.json
 	install -m 644 themes/*.json $(DESTDIR)$(CONFIG_DIR)/themes/
+	install -m 644 assets/*.svg $(DESTDIR)$(CONFIG_DIR)/assets/
 	install -d $(DESTDIR)$(ICONS_DIR)
 	install -m 644 mimenotes.svg $(DESTDIR)$(ICONS_DIR)/mimenotes.svg
 	install -d $(DESTDIR)$(APPS_DIR)

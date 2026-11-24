@@ -30,6 +30,7 @@
 #include <QShortcut>
 #include <QStack>
 #include <QStackedWidget>
+#include <QSvgRenderer>
 #include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextCursor>
@@ -52,8 +53,8 @@ struct ThemeConfig {
     QString name = QStringLiteral("default");
 
     // Window
-    int windowWidth = 503;
-    int windowHeight = 477;
+    int windowWidth = 484;
+    int windowHeight = 467;
     QColor background = QColor("#212421");
     QColor selectionBackground = QColor("#3A423A");
     QColor selectionText = QColor("#FFFFFF");
@@ -65,22 +66,22 @@ struct ThemeConfig {
     int headerFontSize = 14;
     QFont::Weight headerFontWeight = QFont::DemiBold;
     QColor activeTabColor = QColor("#FFFFFF");
-    QColor inactiveTabColor = QColor(255, 255, 255, 110);
-    QColor hoverTabColor = QColor(255, 255, 255, 190);
+    QColor inactiveTabColor = QColor(255, 255, 255, 128);
+    QColor hoverTabColor = QColor(255, 255, 255, 204);
     QColor plusColor = QColor("#FFFFFF");
-    QColor plusHoverColor = QColor("#B4C9AE");
+    QColor plusHoverColor = QColor("#AAFFE4");
 
     // Editor
     QString editorFontFamily = QStringLiteral("Inter");
     int editorFontSize = 16;
     QFont::Weight editorFontWeight = QFont::Normal;
 
-    // 4 bottom-right text colors
+    // 4 bottom-right text/highlighter swatches (from Figma variables)
     std::array<QColor, 4> textColors = {
-        QColor("#FFFFFF"), // Color 1
-        QColor("#B4C9AE"), // Color 2
-        QColor("#C3B7DB"), // Color 3
-        QColor("#A8C9DA")  // Color 4
+        QColor("#FFFFFF"), // swatch_1
+        QColor("#FF8FBE"), // swatch_2
+        QColor("#F4D76E"), // swatch_3
+        QColor("#AAFFE4")  // bright_blue
     };
 };
 
@@ -189,6 +190,48 @@ QColor contrastTextColor(const QColor &bg) {
     double contrastWhite = (1.0 + 0.05) / (L + 0.05);
     double contrastBlack = (L + 0.05) / (0.0 + 0.05);
     return (contrastBlack >= contrastWhite) ? QColor("#000000") : QColor("#FFFFFF");
+}
+
+QString resolveAssetSvgPath(const QString &fileName) {
+    QStringList candidates;
+    candidates << QDir::current().filePath("assets/" + fileName);
+    candidates << QDir(QCoreApplication::applicationDirPath()).filePath("assets/" + fileName);
+    candidates << QDir::home().filePath(".config/mimenotes/assets/" + fileName);
+    for (const QString &cand : candidates) {
+        if (QFileInfo::exists(cand)) {
+            return cand;
+        }
+    }
+    return {};
+}
+
+void renderTintedSvg(QPainter &painter,
+                     const QString &svgPath,
+                     const QRect &targetRect,
+                     const QColor &tint,
+                     qreal dpr) {
+    if (svgPath.isEmpty() || targetRect.isEmpty()) {
+        return;
+    }
+    QSvgRenderer renderer(svgPath);
+    if (!renderer.isValid()) {
+        return;
+    }
+    QSize pxSize(std::max(1, qRound(targetRect.width() * dpr)),
+                 std::max(1, qRound(targetRect.height() * dpr)));
+    QPixmap pm(pxSize);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+
+    QPainter pmPainter(&pm);
+    pmPainter.setRenderHint(QPainter::Antialiasing, true);
+    pmPainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    renderer.render(&pmPainter, QRectF(0, 0, targetRect.width(), targetRect.height()));
+    pmPainter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    pmPainter.fillRect(QRectF(0, 0, targetRect.width(), targetRect.height()), tint);
+    pmPainter.end();
+
+    painter.drawPixmap(targetRect.topLeft(), pm);
 }
 
 QFont makeFontWithFallback(const QString &primaryFamily, int pixelSize, QFont::Weight weight, bool italic = false) {
@@ -1400,7 +1443,8 @@ private:
     bool tabLeaderMode_ = false;
 };
 
-// Bottom-left formatting icon button (Bold, Italic, Up Arrow, Down Arrow)
+// Bottom-left formatting icon button matching exact Figma SVG icons:
+// icon_bold (9x12), icon_italic (12x12), icon_up (9x12), icon_down (8x12)
 class FormatIconButton : public QWidget {
 public:
     enum class IconType {
@@ -1412,7 +1456,19 @@ public:
 
     FormatIconButton(IconType type, const ThemeConfig &theme, QWidget *parent = nullptr)
         : QWidget(parent), type_(type), theme_(theme) {
-        setFixedSize(14, 14);
+        if (type_ == IconType::Bold) {
+            setFixedSize(9, 12);
+            svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_bold.svg"));
+        } else if (type_ == IconType::Italic) {
+            setFixedSize(12, 12);
+            svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_italic.svg"));
+        } else if (type_ == IconType::ArrowUp) {
+            setFixedSize(9, 12);
+            svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_up.svg"));
+        } else {
+            setFixedSize(8, 12);
+            svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_down.svg"));
+        }
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::NoFocus);
         setMouseTracking(true);
@@ -1462,47 +1518,25 @@ protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setRenderHint(QPainter::TextAntialiasing, true);
 
         QColor iconColor;
-        if (highlighted_) {
+        if (highlighted_ || active_) {
             iconColor = theme_.plusHoverColor;
-        } else if (active_ || hovered_) {
-            iconColor = theme_.activeTabColor;
+        } else if (hovered_) {
+            iconColor = theme_.hoverTabColor;
         } else {
-            iconColor = theme_.inactiveTabColor;
+            iconColor = theme_.activeTabColor;
         }
 
-        if (type_ == IconType::Bold) {
-            QFont f = makeFontWithFallback(theme_.headerFontFamily, 13, QFont::ExtraBold, false);
-            p.setFont(f);
-            p.setPen(iconColor);
-            p.drawText(rect(), Qt::AlignCenter, QStringLiteral("B"));
-        } else if (type_ == IconType::Italic) {
-            QFont f = makeFontWithFallback(theme_.headerFontFamily, 13, QFont::DemiBold, true);
-            p.setFont(f);
-            p.setPen(iconColor);
-            p.drawText(rect(), Qt::AlignCenter, QStringLiteral("I"));
-        } else if (type_ == IconType::ArrowUp) {
-            QPen pen(iconColor, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-            p.setPen(pen);
-            // Vertical shaft + up chevron
-            p.drawLine(QPointF(7.0, 11.5), QPointF(7.0, 2.8));
-            p.drawLine(QPointF(3.5, 6.2), QPointF(7.0, 2.5));
-            p.drawLine(QPointF(10.5, 6.2), QPointF(7.0, 2.5));
-        } else if (type_ == IconType::ArrowDown) {
-            QPen pen(iconColor, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-            p.setPen(pen);
-            // Vertical shaft + down chevron
-            p.drawLine(QPointF(7.0, 2.5), QPointF(7.0, 11.2));
-            p.drawLine(QPointF(3.5, 7.8), QPointF(7.0, 11.5));
-            p.drawLine(QPointF(10.5, 7.8), QPointF(7.0, 11.5));
+        if (!svgPath_.isEmpty()) {
+            renderTintedSvg(p, svgPath_, rect(), iconColor, devicePixelRatioF());
         }
     }
 
 private:
     IconType type_;
     ThemeConfig theme_;
+    QString svgPath_;
     bool active_ = false;
     bool hovered_ = false;
     bool highlighted_ = false;
@@ -1560,10 +1594,10 @@ protected:
             p.drawEllipse(QRectF(0.0, 0.0, 12.0, 12.0));
         }
 
-        // Small black circle in the center of the active swatch in both modes
+        // Small swatch_marker (#212421) circle in the center of the active swatch in both modes
         if (activeSwatch_) {
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#000000"));
+            p.setBrush(bgColor_);
             p.drawEllipse(QRectF(4.0, 4.0, 4.0, 4.0));
         }
 
@@ -1596,13 +1630,14 @@ private:
     bool activeSwatch_ = false;
 };
 
-// Custom top header bar matching Figma coordinates
+// Custom top header bar matching Figma wireframe (pad_frame=20, header height=17, total height=37)
 class HeaderTabBar : public QWidget {
 public:
     explicit HeaderTabBar(const ThemeConfig &theme, QWidget *parent = nullptr)
         : QWidget(parent), theme_(theme) {
-        setFixedHeight(36);
+        setFixedHeight(37);
         setMouseTracking(true);
+        addIconPath_ = resolveAssetSvgPath(QStringLiteral("icon_add.svg"));
 
         inlineEditor_ = new QLineEdit(this);
         inlineEditor_->hide();
@@ -1691,11 +1726,15 @@ protected:
         p.setFont(font_);
 
         QList<TabLayout> layouts = computeLayouts();
+        QFont inactiveFont = makeFontWithFallback(
+            theme_.headerFontFamily, theme_.headerFontSize, QFont::Normal);
+
         for (int i = 0; i < layouts.size(); ++i) {
             const TabLayout &tl = layouts[i];
             bool isSelected = (i == currentIndex_);
             bool isHovered = (i == hoveredTabIndex_);
 
+            p.setFont(isSelected ? font_ : inactiveFont);
             QColor textColor = isSelected
                                    ? theme_.activeTabColor
                                    : (isHovered ? theme_.hoverTabColor
@@ -1704,6 +1743,7 @@ protected:
             p.drawText(tl.textRect, Qt::AlignLeft | Qt::AlignVCenter, titles_[i]);
 
             if (isHovered) {
+                p.setFont(font_);
                 QColor closeColor = closeHovered_ ? theme_.activeTabColor : theme_.hoverTabColor;
                 p.setPen(closeColor);
                 p.drawText(tl.closeRect, Qt::AlignCenter, QStringLiteral("×"));
@@ -1711,8 +1751,14 @@ protected:
         }
 
         QRect plusR = plusButtonRect();
-        p.setPen(plusHovered_ ? theme_.plusHoverColor : theme_.plusColor);
-        p.drawText(plusR, Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("+"));
+        QColor plusTint = plusHovered_ ? theme_.plusHoverColor : theme_.plusColor;
+        if (!addIconPath_.isEmpty()) {
+            renderTintedSvg(p, addIconPath_, plusR, plusTint, devicePixelRatioF());
+        } else {
+            p.setFont(font_);
+            p.setPen(plusTint);
+            p.drawText(plusR, Qt::AlignCenter, QStringLiteral("+"));
+        }
     }
 
     void mouseMoveEvent(QMouseEvent *event) override {
@@ -1835,30 +1881,32 @@ private:
         QRect hitRect;
     };
 
+    // Figma node 10:296 ("icon_add"): 14x14 right-aligned inside 20px frame padding, vertically centered in y=20..37
     QRect plusButtonRect() const {
-        return QRect(width() - 24, 9, 10, 17);
+        return QRect(width() - 20 - 14, 21, 14, 14);
     }
 
     QRect plusHitRect() const {
         return plusButtonRect().adjusted(-6, -4, 6, 4);
     }
 
+    // Figma header: x = 20, y = 20, height = 17, gap = 20px between tabs
     QList<TabLayout> computeLayouts() const {
         QList<TabLayout> list;
         QFontMetrics fm(font_);
         int h = std::max(17, fm.height());
         int x = 20;
-        int maxRight = width() - 40;
+        int maxRight = width() - 46;
         for (int i = 0; i < titles_.size(); ++i) {
             int textW = std::max(24, fm.horizontalAdvance(titles_[i]) + 2);
             if (x + textW > maxRight && i > 0) {
                 break;
             }
-            QRect textR(x, 10, textW, h);
-            QRect closeR(x + textW + 2, 10, 14, h);
-            QRect hitR(x - 2, 6, textW + 18, h + 8);
+            QRect textR(x, 20, textW, h);
+            QRect closeR(x + textW + 2, 20, 14, h);
+            QRect hitR(x - 2, 16, textW + 18, h + 8);
             list.append(TabLayout{textR, closeR, hitR});
-            x += textW + 22;
+            x += textW + 20;
         }
         return list;
     }
@@ -1880,6 +1928,7 @@ private:
 
     ThemeConfig theme_;
     QFont font_;
+    QString addIconPath_;
     QStringList titles_;
     int currentIndex_ = 0;
     int hoveredTabIndex_ = -1;
@@ -2182,28 +2231,29 @@ public:
 
         auto *editorContainer = new QWidget(centralRoot_);
         auto *editorLayout = new QVBoxLayout(editorContainer);
-        editorLayout->setContentsMargins(20, 6, 20, 12);
+        editorLayout->setContentsMargins(20, 14, 20, 14);
         editorLayout->setSpacing(0);
 
         editorStack_ = new QStackedWidget(editorContainer);
         editorLayout->addWidget(editorStack_);
         mainLayout->addWidget(editorContainer, 1);
 
-        // Bottom bar:
-        // - Lower-left (x = 20): 4 formatting icons (Bold, Italic, Up Arrow, Down Arrow)
-        // - Lower-right (20px from right): 4 circular color dots (96 x 12)
+        // Footer matching Figma node 10:263 ("footer"):
+        // x = 20, y = 435 in 484x467 (20px left/right/bottom padding, height = 12)
+        // - Lower-left ("format"): 4 SVG icons (9x12, 12x12, 9x12, 8x12) with 20px gap
+        // - Lower-right ("swatches"): 4 swatches (12x12, 16px gap, total 96x12)
         auto *bottomBar = new QWidget(centralRoot_);
-        bottomBar->setFixedHeight(34);
+        bottomBar->setFixedHeight(32); // 12px footer + 20px bottom padding
         auto *bottomLayout = new QHBoxLayout(bottomBar);
         bottomLayout->setContentsMargins(20, 0, 20, 20);
         bottomLayout->setSpacing(0);
 
-        // Lower-left formatting icons row
+        // Lower-left formatting icons row (gap = 20px)
         auto *formatRow = new QWidget(bottomBar);
-        formatRow->setFixedHeight(14);
+        formatRow->setFixedHeight(12);
         auto *formatLayout = new QHBoxLayout(formatRow);
         formatLayout->setContentsMargins(0, 0, 0, 0);
-        formatLayout->setSpacing(14);
+        formatLayout->setSpacing(20);
 
         formatButtons_[0] = new FormatIconButton(FormatIconButton::IconType::Bold, appConfig_.theme, formatRow);
         formatButtons_[0]->setToolTip("Bold (jj + a)");
