@@ -18,11 +18,13 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QScrollBar>
 #include <QShortcut>
@@ -41,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <functional>
 
 namespace {
@@ -82,17 +85,17 @@ struct ThemeConfig {
 };
 
 struct KeybindingsConfig {
-    QString newTab = QStringLiteral("Ctrl+T");
-    QString newTabAlt = QStringLiteral("Ctrl+N");
+    QString newTab = QStringLiteral("ff+t");
+    QString newTabAlt = QStringLiteral("Ctrl+T");
     QString closeTab = QStringLiteral("Ctrl+W");
     QString reopenClosedTab = QStringLiteral("Ctrl+Shift+T");
     QString save = QStringLiteral("Ctrl+S");
-    QString renameTab = QStringLiteral("F2");
-    QString renameTabAlt = QStringLiteral("Ctrl+R");
-    QString nextTab = QStringLiteral("Ctrl+Tab");
-    QString nextTabAlt = QStringLiteral("Ctrl+PgDown");
-    QString prevTab = QStringLiteral("Ctrl+Shift+Tab");
-    QString prevTabAlt = QStringLiteral("Ctrl+PgUp");
+    QString renameTab = QStringLiteral("ff+r");
+    QString renameTabAlt = QStringLiteral("F2");
+    QString nextTab = QStringLiteral("ff+k");
+    QString nextTabAlt = QStringLiteral("Ctrl+Tab");
+    QString prevTab = QStringLiteral("ff+j");
+    QString prevTabAlt = QStringLiteral("Ctrl+Shift+Tab");
     QString zoomIn = QStringLiteral("Ctrl+=");
     QString zoomOut = QStringLiteral("Ctrl+-");
     QString zoomReset = QStringLiteral("Ctrl+0");
@@ -116,7 +119,12 @@ struct KeybindingsConfig {
 
     QString newTabTrigger = QStringLiteral("ff");
     qint64 newTabTimeoutMs = 350;
+    QString deleteLineTrigger = QStringLiteral("dd");
+    qint64 deleteLineTimeoutMs = 350;
+    QString searchTrigger = QStringLiteral("//");
+    qint64 searchTimeoutMs = 350;
     QString resetFormatKey = QStringLiteral("h");
+    QString highlightModeKey = QStringLiteral("u");
     int fontSizeStep = 4;
 };
 
@@ -165,6 +173,24 @@ QColor parseColor(const QString &str, const QColor &fallback) {
     return c.isValid() ? c : fallback;
 }
 
+double srgbChannelLuminance(double c) {
+    return (c <= 0.03928) ? (c / 12.92) : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+double relativeLuminance(const QColor &c) {
+    return 0.2126 * srgbChannelLuminance(c.redF())
+         + 0.7152 * srgbChannelLuminance(c.greenF())
+         + 0.0722 * srgbChannelLuminance(c.blueF());
+}
+
+// Picks #000000 or #FFFFFF based on whichever has the higher WCAG 2.1 contrast ratio against bg
+QColor contrastTextColor(const QColor &bg) {
+    double L = relativeLuminance(bg);
+    double contrastWhite = (1.0 + 0.05) / (L + 0.05);
+    double contrastBlack = (L + 0.05) / (0.0 + 0.05);
+    return (contrastBlack >= contrastWhite) ? QColor("#000000") : QColor("#FFFFFF");
+}
+
 QFont makeFontWithFallback(const QString &primaryFamily, int pixelSize, QFont::Weight weight, bool italic = false) {
     QFont font;
     QStringList families;
@@ -194,6 +220,25 @@ QString expandTilde(const QString &path) {
     return t;
 }
 
+QString defaultNotesDirectory() {
+    QString docsPath = QDir::home().filePath("Documents");
+    if (QDir(docsPath).exists()) {
+        return QDir(docsPath).filePath("Mimenotes");
+    }
+    return QDir::home().filePath("Mimenotes");
+}
+
+QString resolveNotesDirectory(const QString &rawConfigPath) {
+    QString raw = rawConfigPath.trimmed();
+    if (raw.isEmpty() ||
+        raw == QLatin1String("~/Documents/Mimenotes") ||
+        raw == QLatin1String("~/Mimenotes") ||
+        raw == QLatin1String("~/Notes")) {
+        return defaultNotesDirectory();
+    }
+    return expandTilde(raw);
+}
+
 QString sanitizeTitle(const QString &raw) {
     QString s = raw.trimmed();
     s.replace('/', '-');
@@ -208,6 +253,31 @@ QString sanitizeTitle(const QString &raw) {
         s = s.trimmed();
     }
     return s;
+}
+
+QString makeTimestampPrefix() {
+    return QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd_HHmmss_"));
+}
+
+QString extractTimestampPrefix(const QString &filePath) {
+    static const QRegularExpression kPrefixRe(QStringLiteral("^(\\d{4}-\\d{2}-\\d{2}_\\d{6}_)"));
+    QString base = QFileInfo(filePath).completeBaseName();
+    QRegularExpressionMatch m = kPrefixRe.match(base);
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+QString extractDisplayTitle(const QString &filePath) {
+    QString base = QFileInfo(filePath).completeBaseName();
+    QString prefix = extractTimestampPrefix(filePath);
+    if (!prefix.isEmpty() && base.size() > prefix.size()) {
+        return base.mid(prefix.size());
+    }
+    return base;
+}
+
+QString extractDateLabel(const QString &filePath) {
+    QString prefix = extractTimestampPrefix(filePath);
+    return (prefix.size() >= 10) ? prefix.left(10) : QString();
 }
 
 ThemeConfig loadThemeFromFile(const QString &path) {
@@ -304,7 +374,7 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
                 if (root.contains("font_size_step")) {
                     cfg.keys.fontSizeStep = std::clamp(root["font_size_step"].toInt(4), 1, 24);
                 }
-                cfg.notesDir = expandTilde(root["notes_dir"].toString());
+                cfg.notesDir = resolveNotesDirectory(root["notes_dir"].toString());
 
                 if (root["keybindings"].isObject()) {
                     QJsonObject kb = root["keybindings"].toObject();
@@ -357,17 +427,37 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
                         }
                     }
 
-                    QString ntTrig = kb["new_tab_trigger"].toString(cfg.keys.newTabTrigger);
+                    QString ntTrig = kb["tab_leader_trigger"].toString(
+                        kb["new_tab_trigger"].toString(cfg.keys.newTabTrigger));
                     if (ntTrig.size() == 2) {
                         cfg.keys.newTabTrigger = ntTrig;
                     }
-                    cfg.keys.newTabTimeoutMs = std::clamp<qint64>(
-                        kb["new_tab_timeout_ms"].toInt(static_cast<int>(cfg.keys.newTabTimeoutMs)),
-                        80, 2000);
+                    int ntTimeout = kb["tab_leader_timeout_ms"].toInt(
+                        kb["new_tab_timeout_ms"].toInt(static_cast<int>(cfg.keys.newTabTimeoutMs)));
+                    cfg.keys.newTabTimeoutMs = std::clamp<qint64>(ntTimeout, 80, 2000);
+
+                    QString dlTrig = kb["delete_line_trigger"].toString(cfg.keys.deleteLineTrigger);
+                    if (dlTrig.size() == 2) {
+                        cfg.keys.deleteLineTrigger = dlTrig;
+                    }
+                    int dlTimeout = kb["delete_line_timeout_ms"].toInt(static_cast<int>(cfg.keys.deleteLineTimeoutMs));
+                    cfg.keys.deleteLineTimeoutMs = std::clamp<qint64>(dlTimeout, 80, 2000);
+
+                    QString srchTrig = kb["search_trigger"].toString(cfg.keys.searchTrigger);
+                    if (srchTrig.size() == 2) {
+                        cfg.keys.searchTrigger = srchTrig;
+                    }
+                    int srchTimeout = kb["search_timeout_ms"].toInt(static_cast<int>(cfg.keys.searchTimeoutMs));
+                    cfg.keys.searchTimeoutMs = std::clamp<qint64>(srchTimeout, 80, 2000);
 
                     QString rstKey = kb["reset_format_key"].toString(cfg.keys.resetFormatKey);
                     if (!rstKey.isEmpty()) {
                         cfg.keys.resetFormatKey = rstKey;
+                    }
+
+                    QString hlKey = kb["highlight_mode_key"].toString(cfg.keys.highlightModeKey);
+                    if (!hlKey.isEmpty()) {
+                        cfg.keys.highlightModeKey = hlKey;
                     }
                 }
             }
@@ -437,11 +527,16 @@ public:
     std::function<void(bool)> onLeaderModeChanged;
     std::function<void()> onFormattingChanged;
     std::function<void()> onNewTabTriggered;
+    std::function<void()> onPrevTabTriggered;
+    std::function<void()> onNextTabTriggered;
+    std::function<void()> onRenameTabTriggered;
+    std::function<void()> onSearchTriggered;
 
     QColor activeTypingColor() const { return activeColor_; }
     int activeTypingColorIndex() const { return activeColorIndex_; }
     bool isBoldActive() const { return activeBold_; }
     bool isItalicActive() const { return activeItalic_; }
+    bool isHighlightMode() const { return highlightMode_; }
     int activeFontSize() const { return activeFontSize_; }
 
     void updateConfig(const ThemeConfig &newTheme, const KeybindingsConfig &newKeys) {
@@ -510,7 +605,13 @@ public:
         QTextCursor cursor = textCursor();
         if (applyToSelection && cursor.hasSelection()) {
             QTextCharFormat fmt;
-            fmt.setForeground(activeColor_);
+            if (highlightMode_) {
+                fmt.setBackground(activeColor_);
+                fmt.setForeground(contrastTextColor(activeColor_));
+            } else {
+                fmt.setBackground(Qt::NoBrush);
+                fmt.setForeground(activeColor_);
+            }
             cursor.mergeCharFormat(fmt);
             formatExistingDividers();
         }
@@ -520,11 +621,33 @@ public:
         }
     }
 
-    void setFormattingState(bool bold, bool italic, int fontSize) {
+    void setFormattingState(bool bold, bool italic, int fontSize, bool highlight = false) {
         activeBold_ = bold;
         activeItalic_ = italic;
         activeFontSize_ = std::clamp(fontSize, 8, 72);
+        highlightMode_ = highlight;
         applyTypingFormatToCursor();
+    }
+
+    void toggleHighlightMode() {
+        highlightMode_ = !highlightMode_;
+        QTextCursor cursor = textCursor();
+        if (cursor.hasSelection()) {
+            QTextCharFormat fmt;
+            if (highlightMode_) {
+                fmt.setBackground(activeColor_);
+                fmt.setForeground(contrastTextColor(activeColor_));
+            } else {
+                fmt.setBackground(Qt::NoBrush);
+                fmt.setForeground(activeColor_);
+            }
+            cursor.mergeCharFormat(fmt);
+            formatExistingDividers();
+        }
+        applyTypingFormatToCursor();
+        if (onFormattingChanged) {
+            onFormattingChanged();
+        }
     }
 
     void toggleBold() {
@@ -574,6 +697,7 @@ public:
         activeColor_ = theme_.textColors[0];
         activeBold_ = false;
         activeItalic_ = false;
+        highlightMode_ = false;
         activeFontSize_ = theme_.editorFontSize;
 
         QTextCursor cursor = textCursor();
@@ -634,6 +758,16 @@ public:
                 if (slot >= 0) {
                     obj["slot"] = slot;
                 }
+                if (fmt.background().style() != Qt::NoBrush) {
+                    QColor bgCol = fmt.background().color();
+                    if (bgCol.isValid() && bgCol.alpha() > 0) {
+                        obj["bg"] = bgCol.name(QColor::HexRgb).toUpper();
+                        int bgSlot = matchColorSlot(bgCol, theme_.textColors);
+                        if (bgSlot >= 0) {
+                            obj["bg_slot"] = bgSlot;
+                        }
+                    }
+                }
                 obj["bold"] = bold;
                 obj["italic"] = italic;
                 obj["size"] = size;
@@ -669,7 +803,20 @@ public:
             cursor.setPosition(pos);
             cursor.setPosition(end, QTextCursor::KeepAnchor);
             QTextCharFormat fmt;
-            fmt.setForeground(col);
+            if (obj.contains("bg") || obj.contains("bg_slot")) {
+                int bgSlot = obj.contains("bg_slot") ? obj["bg_slot"].toInt(-1) : -1;
+                QColor bgCol = (bgSlot >= 0 && bgSlot < 4)
+                                   ? theme_.textColors[bgSlot]
+                                   : QColor(obj["bg"].toString());
+                if (bgCol.isValid()) {
+                    fmt.setBackground(bgCol);
+                    fmt.setForeground(contrastTextColor(bgCol));
+                } else {
+                    fmt.setForeground(col);
+                }
+            } else {
+                fmt.setForeground(col);
+            }
             fmt.setFont(makeFontWithFallback(
                 theme_.editorFontFamily,
                 size,
@@ -684,8 +831,11 @@ public:
 protected:
     void focusOutEvent(QFocusEvent *event) override {
         setLeaderMode(false);
+        tabLeaderMode_ = false;
         lastLeaderTriggerMs_ = 0;
         lastNewTabTriggerMs_ = 0;
+        lastDeleteLineTriggerMs_ = 0;
+        lastSearchTriggerMs_ = 0;
         QTextEdit::focusOutEvent(event);
     }
 
@@ -722,9 +872,48 @@ protected:
             return;
         }
 
-        // 1. Handle active leader mode (entered via quick leader_trigger chord, default "jj"):
-        //    - j, k, l, ; -> Colors 1..4
-        //    - a -> Bold, s -> Italic, d -> Font size +2px, f -> Font size -2px
+        // 1A. Handle active tab leader mode (entered via quick tab_leader_trigger chord, default "ff"):
+        //     - ff+t -> new_tab, ff+j -> prev_tab, ff+k -> next_tab, ff+r -> rename_tab
+        if (tabLeaderMode_) {
+            tabLeaderMode_ = false;
+            lastNewTabTriggerMs_ = 0;
+            lastLeaderTriggerMs_ = 0;
+
+            QString txt = event->text();
+            QString newKey = extractTabChordKey(keys_.newTab, keys_.newTabAlt, QStringLiteral("t"));
+            QString prevKey = extractTabChordKey(keys_.prevTab, keys_.prevTabAlt, QStringLiteral("j"));
+            QString nextKey = extractTabChordKey(keys_.nextTab, keys_.nextTabAlt, QStringLiteral("k"));
+            QString renKey = extractTabChordKey(keys_.renameTab, keys_.renameTabAlt, QStringLiteral("r"));
+
+            if (!txt.isEmpty() && txt.compare(newKey, Qt::CaseInsensitive) == 0) {
+                if (onNewTabTriggered) onNewTabTriggered();
+                event->accept();
+                return;
+            }
+            if (!txt.isEmpty() && txt.compare(prevKey, Qt::CaseInsensitive) == 0) {
+                if (onPrevTabTriggered) onPrevTabTriggered();
+                event->accept();
+                return;
+            }
+            if (!txt.isEmpty() && txt.compare(nextKey, Qt::CaseInsensitive) == 0) {
+                if (onNextTabTriggered) onNextTabTriggered();
+                event->accept();
+                return;
+            }
+            if (!txt.isEmpty() && txt.compare(renKey, Qt::CaseInsensitive) == 0) {
+                if (onRenameTabTriggered) onRenameTabTriggered();
+                event->accept();
+                return;
+            }
+            if (key == Qt::Key_Escape) {
+                event->accept();
+                return;
+            }
+        }
+
+        // 1B. Handle active leader mode (entered via quick leader_trigger chord, default "jj"):
+        //     - j, k, l, ; -> Colors 1..4
+        //     - a -> Bold, s -> Italic, d -> Font size +step, f -> Font size -step, h -> Reset
         if (leaderMode_) {
             QString txt = event->text();
             int colorIndex = -1;
@@ -747,6 +936,11 @@ protected:
             lastLeaderTriggerMs_ = 0;
             lastNewTabTriggerMs_ = 0;
 
+            if (!txt.isEmpty() && txt.compare(keys_.highlightModeKey, Qt::CaseInsensitive) == 0) {
+                toggleHighlightMode();
+                event->accept();
+                return;
+            }
             if (!txt.isEmpty() && txt.compare(keys_.resetFormatKey, Qt::CaseInsensitive) == 0) {
                 resetFormatting();
                 event->accept();
@@ -811,7 +1005,8 @@ protected:
             lastLeaderTriggerMs_ = 0;
         }
 
-        // 2B. Detect quick 2-character new_tab_trigger chord (default "ff") -> creates a new tab immediately
+        // 2B. Detect quick 2-character tab_leader_trigger chord (default "ff")
+        //     Enters tab leader mode for ff+t (new_tab), ff+j (prev_tab), ff+k (next_tab), ff+r (rename_tab).
         const QString &ntTrig = keys_.newTabTrigger;
         if (noModifiers && ntTrig.size() == 2 && !event->text().isEmpty()) {
             QString firstChar = ntTrig.left(1);
@@ -829,9 +1024,7 @@ protected:
                     lastNewTabTriggerMs_ = 0;
                     lastLeaderTriggerMs_ = 0;
                     setLeaderMode(false);
-                    if (onNewTabTriggered) {
-                        onNewTabTriggered();
-                    }
+                    tabLeaderMode_ = true;
                     event->accept();
                     return;
                 }
@@ -839,6 +1032,67 @@ protected:
             lastNewTabTriggerMs_ = (event->text() == firstChar) ? now : 0;
         } else {
             lastNewTabTriggerMs_ = 0;
+        }
+
+        // 2C. Detect quick 2-character delete_line_trigger chord (default "dd") -> deletes current line
+        const QString &dlTrig = keys_.deleteLineTrigger;
+        if (noModifiers && dlTrig.size() == 2 && !event->text().isEmpty()) {
+            QString firstChar = dlTrig.left(1);
+            QString secondChar = dlTrig.mid(1, 1);
+
+            if (event->text() == secondChar &&
+                lastDeleteLineTriggerMs_ > 0 &&
+                (now - lastDeleteLineTriggerMs_) <= keys_.deleteLineTimeoutMs) {
+                QTextCursor c = textCursor();
+                int posInBlk = c.positionInBlock();
+                if (!c.hasSelection() && posInBlk > 0 &&
+                    c.block().text().mid(posInBlk - 1, 1) == firstChar) {
+                    lastDeleteLineTriggerMs_ = 0;
+                    lastLeaderTriggerMs_ = 0;
+                    lastNewTabTriggerMs_ = 0;
+                    setLeaderMode(false);
+                    tabLeaderMode_ = false;
+                    removeDividerBlock(c.block());
+                    event->accept();
+                    return;
+                }
+            }
+            lastDeleteLineTriggerMs_ = (event->text() == firstChar) ? now : 0;
+        } else {
+            lastDeleteLineTriggerMs_ = 0;
+        }
+
+        // 2D. Detect quick 2-character search_trigger chord (default "//") -> opens searchable notes overlay
+        const QString &srchTrig = keys_.searchTrigger;
+        if (noModifiers && srchTrig.size() == 2 && !event->text().isEmpty()) {
+            QString firstChar = srchTrig.left(1);
+            QString secondChar = srchTrig.mid(1, 1);
+
+            if (event->text() == secondChar &&
+                lastSearchTriggerMs_ > 0 &&
+                (now - lastSearchTriggerMs_) <= keys_.searchTimeoutMs) {
+                QTextCursor c = textCursor();
+                int posInBlk = c.positionInBlock();
+                if (!c.hasSelection() && posInBlk > 0 &&
+                    c.block().text().mid(posInBlk - 1, 1) == firstChar) {
+                    c.deletePreviousChar();
+                    setTextCursor(c);
+                    lastSearchTriggerMs_ = 0;
+                    lastDeleteLineTriggerMs_ = 0;
+                    lastLeaderTriggerMs_ = 0;
+                    lastNewTabTriggerMs_ = 0;
+                    setLeaderMode(false);
+                    tabLeaderMode_ = false;
+                    if (onSearchTriggered) {
+                        onSearchTriggered();
+                    }
+                    event->accept();
+                    return;
+                }
+            }
+            lastSearchTriggerMs_ = (event->text() == firstChar) ? now : 0;
+        } else {
+            lastSearchTriggerMs_ = 0;
         }
 
         QTextCursor cursor = textCursor();
@@ -935,6 +1189,17 @@ protected:
     }
 
 private:
+    QString extractTabChordKey(const QString &primary, const QString &alt, const QString &fallback) const {
+        QString prefix = keys_.newTabTrigger + QLatin1String("+");
+        if (primary.startsWith(prefix, Qt::CaseInsensitive) && primary.size() > prefix.size()) {
+            return primary.mid(prefix.size()).trimmed();
+        }
+        if (alt.startsWith(prefix, Qt::CaseInsensitive) && alt.size() > prefix.size()) {
+            return alt.mid(prefix.size()).trimmed();
+        }
+        return fallback;
+    }
+
     static int matchColorSlot(const QColor &c, const std::array<QColor, 4> &palette) {
         if (!c.isValid()) return -1;
         for (int i = 0; i < 4; ++i) {
@@ -1100,7 +1365,13 @@ private:
 
     QTextCharFormat currentTypingCharFormat() const {
         QTextCharFormat fmt;
-        fmt.setForeground(activeColor_);
+        if (highlightMode_) {
+            fmt.setBackground(activeColor_);
+            fmt.setForeground(contrastTextColor(activeColor_));
+        } else {
+            fmt.setBackground(Qt::NoBrush);
+            fmt.setForeground(activeColor_);
+        }
         fmt.setFont(makeFontWithFallback(
             theme_.editorFontFamily,
             activeFontSize_,
@@ -1119,10 +1390,14 @@ private:
     int activeColorIndex_ = 0;
     bool activeBold_ = false;
     bool activeItalic_ = false;
+    bool highlightMode_ = false;
     int activeFontSize_ = 16;
     qint64 lastLeaderTriggerMs_ = 0;
     qint64 lastNewTabTriggerMs_ = 0;
+    qint64 lastDeleteLineTriggerMs_ = 0;
+    qint64 lastSearchTriggerMs_ = 0;
     bool leaderMode_ = false;
+    bool tabLeaderMode_ = false;
 };
 
 // Bottom-left formatting icon button (Bold, Italic, Up Arrow, Down Arrow)
@@ -1258,19 +1533,49 @@ public:
         }
     }
 
+    void setSquareMode(bool square) {
+        if (squareMode_ != square) {
+            squareMode_ = square;
+            update();
+        }
+    }
+
+    void setActiveSwatch(bool active) {
+        if (activeSwatch_ != active) {
+            activeSwatch_ = active;
+            update();
+        }
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(Qt::NoPen);
         p.setBrush(color_);
-        p.drawEllipse(QRectF(0.0, 0.0, 12.0, 12.0));
 
-        // Subtle inner ring indicator when 'jj' color mode is waiting for j/k/l/;
+        if (squareMode_) {
+            p.drawRoundedRect(QRectF(0.0, 0.0, 12.0, 12.0), 1.5, 1.5);
+        } else {
+            p.drawEllipse(QRectF(0.0, 0.0, 12.0, 12.0));
+        }
+
+        // Small black circle in the center of the active swatch in both modes
+        if (activeSwatch_) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#000000"));
+            p.drawEllipse(QRectF(4.0, 4.0, 4.0, 4.0));
+        }
+
+        // Subtle inner ring indicator when 'jj' leader mode is waiting for a key
         if (highlighted_) {
             p.setBrush(Qt::NoBrush);
-            p.setPen(QPen(bgColor_, 2.0));
-            p.drawEllipse(QRectF(2.5, 2.5, 7.0, 7.0));
+            p.setPen(QPen(bgColor_, 1.6));
+            if (squareMode_) {
+                p.drawRoundedRect(QRectF(2.0, 2.0, 8.0, 8.0), 1.0, 1.0);
+            } else {
+                p.drawEllipse(QRectF(2.0, 2.0, 8.0, 8.0));
+            }
         }
     }
 
@@ -1287,6 +1592,8 @@ private:
     QColor color_;
     QColor bgColor_;
     bool highlighted_ = false;
+    bool squareMode_ = false;
+    bool activeSwatch_ = false;
 };
 
 // Custom top header bar matching Figma coordinates
@@ -1583,6 +1890,260 @@ private:
     bool activeRename_ = false;
 };
 
+// Searchable quick-open overlay showing all .txt files in the Mimenotes directory (triggered by "//")
+class QuickSearchOverlay : public QWidget {
+public:
+    struct NoteEntry {
+        QString title;
+        QString dateLabel;
+        QString filePath;
+        QString preview;
+        QString fullTextLower;
+    };
+
+    explicit QuickSearchOverlay(const ThemeConfig &theme, QWidget *parent = nullptr)
+        : QWidget(parent), theme_(theme) {
+        hide();
+
+        card_ = new QWidget(this);
+        card_->setObjectName("searchCard");
+        auto *cardLayout = new QVBoxLayout(card_);
+        cardLayout->setContentsMargins(12, 10, 12, 10);
+        cardLayout->setSpacing(8);
+
+        searchInput_ = new QLineEdit(card_);
+        searchInput_->setPlaceholderText("Search notes...");
+        searchInput_->setFrame(false);
+        searchInput_->installEventFilter(this);
+
+        resultsList_ = new QListWidget(card_);
+        resultsList_->setFrameStyle(QFrame::NoFrame);
+        resultsList_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        resultsList_->setFocusPolicy(Qt::NoFocus);
+
+        cardLayout->addWidget(searchInput_);
+        cardLayout->addWidget(resultsList_);
+
+        connect(searchInput_, &QLineEdit::textChanged, this, [this](const QString &text) {
+            populateFiltered(text);
+        });
+        connect(resultsList_, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+            activateItem(item);
+        });
+        connect(resultsList_, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
+            activateItem(item);
+        });
+
+        applyTheme(theme_);
+    }
+
+    std::function<void(const QString &)> onFileSelected;
+    std::function<void()> onDismissed;
+
+    void applyTheme(const ThemeConfig &theme) {
+        theme_ = theme;
+        QFont inputFont = makeFontWithFallback(theme_.headerFontFamily, 14, QFont::Normal);
+        QFont listFont = makeFontWithFallback(theme_.headerFontFamily, 13, QFont::Normal);
+        searchInput_->setFont(inputFont);
+        resultsList_->setFont(listFont);
+
+        QColor cardBg = theme_.background.lightness() < 128
+                            ? theme_.background.lighter(118)
+                            : theme_.background.darker(104);
+        QColor borderCol = theme_.selectionBackground.lighter(125);
+
+        card_->setStyleSheet(QString(R"(
+            QWidget#searchCard {
+                background-color: %1;
+                border: 1px solid %2;
+                border-radius: 8px;
+            }
+            QLineEdit {
+                background-color: %3;
+                color: %4;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 8px;
+                selection-background-color: %5;
+            }
+            QListWidget {
+                background-color: transparent;
+                color: %4;
+                outline: none;
+            }
+            QListWidget::item {
+                padding: 6px 8px;
+                border-radius: 4px;
+            }
+            QListWidget::item:selected {
+                background-color: %5;
+                color: %4;
+            }
+            QListWidget::item:hover:!selected {
+                background-color: %3;
+            }
+        )")
+                                 .arg(cardBg.name(QColor::HexRgb),
+                                      borderCol.name(QColor::HexRgb),
+                                      theme_.background.name(QColor::HexRgb),
+                                      theme_.activeTabColor.name(QColor::HexRgb),
+                                      theme_.selectionBackground.name(QColor::HexRgb)));
+    }
+
+    void openForDirectory(const QString &notesDir) {
+        entries_.clear();
+        QDir dir(notesDir);
+        QStringList files = dir.entryList(QStringList() << "*.txt", QDir::Files, QDir::Name | QDir::Reversed);
+        for (const QString &fname : files) {
+            QString fullPath = dir.filePath(fname);
+            QString title = extractDisplayTitle(fullPath);
+            QString dateLabel = extractDateLabel(fullPath);
+            QString content;
+            QFile f(fullPath);
+            if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                QTextStream in(&f);
+                content = in.readAll();
+            }
+            QString preview;
+            for (const QString &line : content.split('\n')) {
+                QString trimmed = line.trimmed();
+                if (!trimmed.isEmpty() && trimmed != QLatin1String("---")) {
+                    preview = trimmed.left(48);
+                    break;
+                }
+            }
+            entries_.append(NoteEntry{title, dateLabel, fullPath, preview, content.toLower()});
+        }
+
+        if (parentWidget()) {
+            setGeometry(parentWidget()->rect());
+        }
+        positionCard();
+        searchInput_->clear();
+        populateFiltered(QString());
+        show();
+        raise();
+        searchInput_->setFocus();
+    }
+
+    void dismiss() {
+        if (!isVisible()) return;
+        hide();
+        if (onDismissed) {
+            onDismissed();
+        }
+    }
+
+    void syncGeometry() {
+        if (parentWidget()) {
+            setGeometry(parentWidget()->rect());
+            positionCard();
+        }
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.fillRect(rect(), QColor(0, 0, 0, 115));
+    }
+
+    void mousePressEvent(QMouseEvent *event) override {
+        if (!card_->geometry().contains(event->pos())) {
+            dismiss();
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (watched == searchInput_ && event->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(event);
+            int key = ke->key();
+            bool ctrl = ke->modifiers() & Qt::ControlModifier;
+
+            if (key == Qt::Key_Escape) {
+                dismiss();
+                return true;
+            }
+            if (key == Qt::Key_Down || (ctrl && (key == Qt::Key_J || key == Qt::Key_N))) {
+                moveSelection(1);
+                return true;
+            }
+            if (key == Qt::Key_Up || (ctrl && (key == Qt::Key_K || key == Qt::Key_P))) {
+                moveSelection(-1);
+                return true;
+            }
+            if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+                if (auto *item = resultsList_->currentItem()) {
+                    activateItem(item);
+                } else {
+                    dismiss();
+                }
+                return true;
+            }
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    void positionCard() {
+        int cardW = std::min(400, std::max(240, width() - 40));
+        int cardH = std::min(280, std::max(140, height() - 88));
+        int x = (width() - cardW) / 2;
+        int y = 44;
+        card_->setGeometry(x, y, cardW, cardH);
+    }
+
+    void populateFiltered(const QString &query) {
+        resultsList_->clear();
+        QString q = query.trimmed().toLower();
+        for (const NoteEntry &entry : entries_) {
+            bool matches = q.isEmpty() ||
+                           entry.title.toLower().contains(q) ||
+                           entry.dateLabel.contains(q) ||
+                           entry.fullTextLower.contains(q);
+            if (!matches) continue;
+
+            QString header = entry.dateLabel.isEmpty()
+                                 ? entry.title
+                                 : QString("%1  (%2)").arg(entry.title, entry.dateLabel);
+            QString label = entry.preview.isEmpty()
+                                ? header
+                                : QString("%1   —   %2").arg(header, entry.preview);
+            auto *item = new QListWidgetItem(label, resultsList_);
+            item->setData(Qt::UserRole, entry.filePath);
+            item->setToolTip(entry.filePath);
+        }
+        if (resultsList_->count() > 0) {
+            resultsList_->setCurrentRow(0);
+        }
+    }
+
+    void moveSelection(int delta) {
+        int count = resultsList_->count();
+        if (count <= 0) return;
+        int row = resultsList_->currentRow();
+        int next = (row < 0) ? 0 : (row + delta + count) % count;
+        resultsList_->setCurrentRow(next);
+    }
+
+    void activateItem(QListWidgetItem *item) {
+        if (!item) return;
+        QString path = item->data(Qt::UserRole).toString();
+        hide();
+        if (onFileSelected && !path.isEmpty()) {
+            onFileSelected(path);
+        }
+    }
+
+    ThemeConfig theme_;
+    QWidget *card_ = nullptr;
+    QLineEdit *searchInput_ = nullptr;
+    QListWidget *resultsList_ = nullptr;
+    QList<NoteEntry> entries_;
+};
+
 class NotepadWindow : public QMainWindow {
 public:
     NotepadWindow(const AppConfig &appConfig,
@@ -1599,7 +2160,7 @@ public:
         } else if (!appConfig_.notesDir.isEmpty()) {
             notesDir_ = QDir::cleanPath(appConfig_.notesDir);
         } else {
-            notesDir_ = QDir::home().filePath("Notes");
+            notesDir_ = defaultNotesDirectory();
         }
 
         resize(appConfig_.theme.windowWidth, appConfig_.theme.windowHeight);
@@ -1731,12 +2292,29 @@ public:
             createNewTab();
         };
 
+        searchOverlay_ = new QuickSearchOverlay(appConfig_.theme, centralRoot_);
+        searchOverlay_->onFileSelected = [this](const QString &filePath) {
+            openFileByPath(filePath);
+        };
+        searchOverlay_->onDismissed = [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->setFocus();
+            }
+        };
+
         setupShortcuts();
         loadSession();
         setupConfigWatcher();
     }
 
 protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QMainWindow::resizeEvent(event);
+        if (searchOverlay_) {
+            searchOverlay_->syncGeometry();
+        }
+    }
+
     void closeEvent(QCloseEvent *event) override {
         saveAllDirty();
         saveSessionState();
@@ -1783,6 +2361,9 @@ private:
         if (headerBar_) {
             headerBar_->applyTheme(appConfig_.theme);
         }
+        if (searchOverlay_) {
+            searchOverlay_->applyTheme(appConfig_.theme);
+        }
         for (int i = 0; i < 4; ++i) {
             if (colorButtons_[i]) {
                 colorButtons_[i]->setColors(appConfig_.theme.textColors[i], appConfig_.theme.background);
@@ -1800,6 +2381,14 @@ private:
         }
         if (formatButtons_[1]) {
             formatButtons_[1]->setActive(ed && ed->isItalicActive());
+        }
+        bool hl = ed && ed->isHighlightMode();
+        int activeSlot = ed ? ed->activeTypingColorIndex() : 0;
+        for (int i = 0; i < 4; ++i) {
+            if (colorButtons_[i]) {
+                colorButtons_[i]->setSquareMode(hl);
+                colorButtons_[i]->setActiveSwatch(i == activeSlot);
+            }
         }
     }
 
@@ -1881,6 +2470,11 @@ private:
         auto bind = [this](const QString &seqStr, std::function<void()> fn) {
             QString trimmed = seqStr.trimmed();
             if (trimmed.isEmpty()) return;
+            // Skip leader-chord bindings like "ff+j" / "jj+a" which are handled in NoteEditor
+            if (trimmed.startsWith(appConfig_.keys.newTabTrigger + QLatin1String("+"), Qt::CaseInsensitive) ||
+                trimmed.startsWith(appConfig_.keys.leaderTrigger + QLatin1String("+"), Qt::CaseInsensitive)) {
+                return;
+            }
             auto *sc = new QShortcut(QKeySequence(trimmed), this);
             connect(sc, &QShortcut::activated, this, std::move(fn));
             shortcuts_.append(sc);
@@ -1973,7 +2567,7 @@ private:
     void syncHeaderTabs() {
         QStringList titles;
         for (int i = 0; i < tabCount(); ++i) {
-            titles.append(QFileInfo(filePathAt(i)).completeBaseName());
+            titles.append(extractDisplayTitle(filePathAt(i)));
         }
         headerBar_->setTabs(titles, currentTabIndex());
     }
@@ -2018,21 +2612,24 @@ private:
         }
     }
 
-    QString uniqueNoteFilePath(const QString &desiredBaseName, const QString &ignoreFilePath = {}) const {
+    QString uniqueNoteFilePath(const QString &desiredBaseName,
+                               const QString &ignoreFilePath = {},
+                               const QString &timestampPrefix = {}) const {
         QString base = sanitizeTitle(desiredBaseName);
         if (base.isEmpty()) {
             base = "Note";
         }
+        QString prefix = timestampPrefix.isEmpty() ? makeTimestampPrefix() : timestampPrefix;
 
         QDir dir(notesDir_);
-        QString candidate = dir.filePath(base + ".txt");
+        QString candidate = dir.filePath(prefix + base + ".txt");
         if (candidate == ignoreFilePath || !QFileInfo::exists(candidate)) {
             return candidate;
         }
 
         int suffix = 2;
         while (true) {
-            candidate = dir.filePath(QString("%1 %2.txt").arg(base).arg(suffix));
+            candidate = dir.filePath(QString("%1%2 %3.txt").arg(prefix, base).arg(suffix));
             if (candidate == ignoreFilePath || !QFileInfo::exists(candidate)) {
                 return candidate;
             }
@@ -2041,15 +2638,21 @@ private:
     }
 
     QString nextDefaultNoteFilePath() const {
-        QDir dir(notesDir_);
+        QStringList openTitles;
+        for (int i = 0; i < tabCount(); ++i) {
+            openTitles.append(extractDisplayTitle(filePathAt(i)));
+        }
+
         int n = 1;
+        QString title;
         while (true) {
-            QString candidate = dir.filePath(QString("Note %1.txt").arg(n));
-            if (!QFileInfo::exists(candidate)) {
-                return candidate;
+            title = QString("Note %1").arg(n);
+            if (!openTitles.contains(title, Qt::CaseInsensitive)) {
+                break;
             }
             ++n;
         }
+        return uniqueNoteFilePath(title);
     }
 
     int addTabForFile(const QString &filePath,
@@ -2061,7 +2664,8 @@ private:
                       const QColor &activeColorFallback = {},
                       bool activeBold = false,
                       bool activeItalic = false,
-                      int activeFontSize = -1) {
+                      int activeFontSize = -1,
+                      bool highlightMode = false) {
         auto *editor = new NoteEditor(appConfig_.theme, appConfig_.keys, editorStack_);
         editor->setFont(editorFont_);
         QFontMetrics fm(editorFont_);
@@ -2073,7 +2677,7 @@ private:
             editor->formatExistingDividers();
         }
         int initSize = (activeFontSize > 0) ? activeFontSize : appConfig_.theme.editorFontSize;
-        editor->setFormattingState(activeBold, activeItalic, initSize);
+        editor->setFormattingState(activeBold, activeItalic, initSize, highlightMode);
 
         if (activeColorSlot >= 0 && activeColorSlot < 4) {
             editor->setActiveTypingColorSlot(activeColorSlot, false);
@@ -2099,6 +2703,29 @@ private:
                 createNewTab();
             });
         };
+        editor->onPrevTabTriggered = [this]() {
+            QTimer::singleShot(0, this, [this]() {
+                cycleTab(-1);
+            });
+        };
+        editor->onNextTabTriggered = [this]() {
+            QTimer::singleShot(0, this, [this]() {
+                cycleTab(1);
+            });
+        };
+        editor->onRenameTabTriggered = [this]() {
+            QTimer::singleShot(0, this, [this]() {
+                int idx = currentTabIndex();
+                if (idx >= 0) {
+                    headerBar_->startRename(idx);
+                }
+            });
+        };
+        editor->onSearchTriggered = [this]() {
+            QTimer::singleShot(0, this, [this]() {
+                openSearchOverlay();
+            });
+        };
 
         int idx = (insertAt >= 0 && insertAt <= tabCount())
                       ? editorStack_->insertWidget(insertAt, editor)
@@ -2116,6 +2743,38 @@ private:
         });
 
         return idx;
+    }
+
+    void openSearchOverlay() {
+        saveAllDirty();
+        if (searchOverlay_) {
+            searchOverlay_->openForDirectory(notesDir_);
+        }
+    }
+
+    void openFileByPath(const QString &filePath) {
+        QString targetClean = QDir::cleanPath(filePath);
+        for (int i = 0; i < tabCount(); ++i) {
+            if (QDir::cleanPath(filePathAt(i)) == targetClean) {
+                setCurrentTabIndex(i);
+                return;
+            }
+        }
+        if (QFileInfo::exists(targetClean)) {
+            QString fname = QFileInfo(targetClean).fileName();
+            QString content = readFileContent(targetClean);
+            QJsonArray spans = savedSpansMap_[fname].toArray();
+            int slot = savedActiveSlotsMap_.contains(fname) ? savedActiveSlotsMap_[fname].toInt(0) : -1;
+            QColor activeCol(savedActiveColorsMap_[fname].toString());
+            QJsonObject fObj = savedActiveFormatsMap_[fname].toObject();
+            bool b = fObj["bold"].toBool(false);
+            bool itl = fObj["italic"].toBool(false);
+            int sz = fObj["size"].toInt(appConfig_.theme.editorFontSize);
+
+            int idx = addTabForFile(targetClean, content, false, -1, spans, slot, activeCol, b, itl, sz);
+            setCurrentTabIndex(idx);
+            saveSessionState();
+        }
     }
 
     void createNewTab() {
@@ -2137,12 +2796,13 @@ private:
         }
 
         QString oldPath = filePathAt(index);
-        QString oldTitle = QFileInfo(oldPath).completeBaseName();
+        QString oldTitle = extractDisplayTitle(oldPath);
         if (clean == oldTitle) {
             return;
         }
 
-        QString newPath = uniqueNoteFilePath(clean, oldPath);
+        QString existingPrefix = extractTimestampPrefix(oldPath);
+        QString newPath = uniqueNoteFilePath(clean, oldPath, existingPrefix);
         if (QFile::exists(oldPath)) {
             if (!QFile::rename(oldPath, newPath)) {
                 return;
@@ -2150,6 +2810,23 @@ private:
         } else {
             setFilePathAt(index, newPath);
             saveEditor(editorAt(index));
+        }
+
+        QString oldFname = QFileInfo(oldPath).fileName();
+        QString newFname = QFileInfo(newPath).fileName();
+        if (oldFname != newFname) {
+            if (savedSpansMap_.contains(oldFname)) {
+                savedSpansMap_[newFname] = savedSpansMap_.take(oldFname);
+            }
+            if (savedActiveColorsMap_.contains(oldFname)) {
+                savedActiveColorsMap_[newFname] = savedActiveColorsMap_.take(oldFname);
+            }
+            if (savedActiveSlotsMap_.contains(oldFname)) {
+                savedActiveSlotsMap_[newFname] = savedActiveSlotsMap_.take(oldFname);
+            }
+            if (savedActiveFormatsMap_.contains(oldFname)) {
+                savedActiveFormatsMap_[newFname] = savedActiveFormatsMap_.take(oldFname);
+            }
         }
 
         setFilePathAt(index, newPath);
@@ -2170,30 +2847,38 @@ private:
         saveEditor(ed);
 
         QString path = filePathAt(index);
+        QString fname = QFileInfo(path).fileName();
         QString title = QFileInfo(path).completeBaseName();
-        QString content = ed ? ed->toPlainText() : QString();
 
-        if (content.trimmed().isEmpty()) {
-            QFile::remove(path);
-        } else {
-            QDir trashDir(trashDirPath());
-            if (!trashDir.exists()) {
-                trashDir.mkpath(".");
-            }
-            QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz");
-            QString trashFile = trashDir.filePath(QString("%1_%2.txt").arg(stamp, title));
-            if (QFile::rename(path, trashFile)) {
-                closedStack_.push(ClosedNote{
-                    title,
-                    trashFile,
-                    ed ? ed->exportStyleSpans() : QJsonArray{},
-                    ed ? ed->activeTypingColor().name(QColor::HexRgb).toUpper() : QStringLiteral("#FFFFFF"),
-                    ed ? ed->activeTypingColorIndex() : 0,
-                    ed ? ed->isBoldActive() : false,
-                    ed ? ed->isItalicActive() : false,
-                    ed ? ed->activeFontSize() : appConfig_.theme.editorFontSize,
-                    index});
-            }
+        // Never delete or move files from the filesystem when closing a tab;
+        // preserve formatting metadata so reopening via // or Ctrl+Shift+T restores everything.
+        if (ed && !fname.isEmpty()) {
+            QJsonArray spans = ed->exportStyleSpans();
+            QString activeCol = ed->activeTypingColor().name(QColor::HexRgb).toUpper();
+            int activeSlot = ed->activeTypingColorIndex();
+            bool b = ed->isBoldActive();
+            bool itl = ed->isItalicActive();
+            int sz = ed->activeFontSize();
+
+            savedSpansMap_[fname] = spans;
+            savedActiveColorsMap_[fname] = activeCol;
+            savedActiveSlotsMap_[fname] = activeSlot;
+            QJsonObject fObj;
+            fObj["bold"] = b;
+            fObj["italic"] = itl;
+            fObj["size"] = sz;
+            savedActiveFormatsMap_[fname] = fObj;
+
+            closedStack_.push(ClosedNote{
+                title,
+                path,
+                spans,
+                activeCol,
+                activeSlot,
+                b,
+                itl,
+                sz,
+                index});
         }
 
         QWidget *w = editorStack_->widget(index);
@@ -2212,12 +2897,16 @@ private:
     void reopenClosedTab() {
         while (!closedStack_.isEmpty()) {
             ClosedNote item = closedStack_.pop();
-            if (!QFile::exists(item.trashFilePath)) {
+            QString restoredPath = QDir::cleanPath(item.trashFilePath);
+            if (!QFileInfo::exists(restoredPath)) {
                 continue;
             }
-            QString restoredPath = uniqueNoteFilePath(item.title);
-            if (!QFile::rename(item.trashFilePath, restoredPath)) {
-                continue;
+            // If already open in a tab, just switch to it
+            for (int i = 0; i < tabCount(); ++i) {
+                if (QDir::cleanPath(filePathAt(i)) == restoredPath) {
+                    setCurrentTabIndex(i);
+                    return;
+                }
             }
             QString content = readFileContent(restoredPath);
             int targetIdx = std::clamp(item.index, 0, tabCount());
@@ -2284,24 +2973,21 @@ private:
         ensureDirectories();
 
         QJsonArray tabsArray;
-        QJsonObject spansMap;
-        QJsonObject activeColorsMap;
-        QJsonObject activeSlotsMap;
-        QJsonObject activeFormatMap;
         for (int i = 0; i < tabCount(); ++i) {
             QString path = filePathAt(i);
             if (!path.isEmpty()) {
                 QString fname = QFileInfo(path).fileName();
                 tabsArray.append(fname);
                 if (auto *ed = editorAt(i)) {
-                    spansMap[fname] = ed->exportStyleSpans();
-                    activeColorsMap[fname] = ed->activeTypingColor().name(QColor::HexRgb).toUpper();
-                    activeSlotsMap[fname] = ed->activeTypingColorIndex();
+                    savedSpansMap_[fname] = ed->exportStyleSpans();
+                    savedActiveColorsMap_[fname] = ed->activeTypingColor().name(QColor::HexRgb).toUpper();
+                    savedActiveSlotsMap_[fname] = ed->activeTypingColorIndex();
                     QJsonObject fObj;
                     fObj["bold"] = ed->isBoldActive();
                     fObj["italic"] = ed->isItalicActive();
                     fObj["size"] = ed->activeFontSize();
-                    activeFormatMap[fname] = fObj;
+                    fObj["highlight"] = ed->isHighlightMode();
+                    savedActiveFormatsMap_[fname] = fObj;
                 }
             }
         }
@@ -2314,10 +3000,10 @@ private:
         }
         root["window_width"] = width();
         root["window_height"] = height();
-        root["tab_color_spans"] = spansMap;
-        root["tab_active_colors"] = activeColorsMap;
-        root["tab_active_color_slots"] = activeSlotsMap;
-        root["tab_active_formats"] = activeFormatMap;
+        root["tab_color_spans"] = savedSpansMap_;
+        root["tab_active_colors"] = savedActiveColorsMap_;
+        root["tab_active_color_slots"] = savedActiveSlotsMap_;
+        root["tab_active_formats"] = savedActiveFormatsMap_;
 
         QSaveFile file(sessionFilePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -2334,25 +3020,23 @@ private:
 
         QStringList orderedFiles;
         QString activeFileName;
-        QJsonObject spansMap;
-        QJsonObject activeColorsMap;
-        QJsonObject activeSlotsMap;
-        QJsonObject activeFormatMap;
+        bool hasSessionFile = false;
 
         QFile sessionFile(sessionFilePath());
         if (sessionFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
             QJsonDocument doc = QJsonDocument::fromJson(sessionFile.readAll());
             if (doc.isObject()) {
+                hasSessionFile = true;
                 QJsonObject obj = doc.object();
                 int w = obj["window_width"].toInt(appConfig_.theme.windowWidth);
                 int h = obj["window_height"].toInt(appConfig_.theme.windowHeight);
                 resize(std::max(300, w), std::max(240, h));
 
                 activeFileName = obj["active_tab"].toString();
-                spansMap = obj["tab_color_spans"].toObject();
-                activeColorsMap = obj["tab_active_colors"].toObject();
-                activeSlotsMap = obj["tab_active_color_slots"].toObject();
-                activeFormatMap = obj["tab_active_formats"].toObject();
+                savedSpansMap_ = obj["tab_color_spans"].toObject();
+                savedActiveColorsMap_ = obj["tab_active_colors"].toObject();
+                savedActiveSlotsMap_ = obj["tab_active_color_slots"].toObject();
+                savedActiveFormatsMap_ = obj["tab_active_formats"].toObject();
 
                 QJsonArray arr = obj["open_tabs"].toArray();
                 for (const QJsonValue &v : arr) {
@@ -2364,9 +3048,12 @@ private:
             }
         }
 
-        for (const QString &fname : existingFiles) {
-            if (!orderedFiles.contains(fname)) {
-                orderedFiles.append(fname);
+        // Only auto-open all existing .txt files on first launch when no .session.json exists
+        if (!hasSessionFile) {
+            for (const QString &fname : existingFiles) {
+                if (!orderedFiles.contains(fname)) {
+                    orderedFiles.append(fname);
+                }
             }
         }
 
@@ -2374,15 +3061,16 @@ private:
         for (const QString &fname : orderedFiles) {
             QString fullPath = dir.filePath(fname);
             QString content = readFileContent(fullPath);
-            QJsonArray spans = spansMap[fname].toArray();
-            int slot = activeSlotsMap.contains(fname) ? activeSlotsMap[fname].toInt(0) : -1;
-            QColor activeCol(activeColorsMap[fname].toString());
-            QJsonObject fObj = activeFormatMap[fname].toObject();
+            QJsonArray spans = savedSpansMap_[fname].toArray();
+            int slot = savedActiveSlotsMap_.contains(fname) ? savedActiveSlotsMap_[fname].toInt(0) : -1;
+            QColor activeCol(savedActiveColorsMap_[fname].toString());
+            QJsonObject fObj = savedActiveFormatsMap_[fname].toObject();
             bool b = fObj["bold"].toBool(false);
             bool itl = fObj["italic"].toBool(false);
             int sz = fObj["size"].toInt(appConfig_.theme.editorFontSize);
+            bool hl = fObj["highlight"].toBool(false);
 
-            int idx = addTabForFile(fullPath, content, false, -1, spans, slot, activeCol, b, itl, sz);
+            int idx = addTabForFile(fullPath, content, false, -1, spans, slot, activeCol, b, itl, sz, hl);
             if (fname == activeFileName) {
                 activeIndex = idx;
             }
@@ -2408,6 +3096,7 @@ private:
     QWidget *centralRoot_ = nullptr;
     HeaderTabBar *headerBar_ = nullptr;
     QStackedWidget *editorStack_ = nullptr;
+    QuickSearchOverlay *searchOverlay_ = nullptr;
     std::array<FormatIconButton *, 4> formatButtons_ = {nullptr, nullptr, nullptr, nullptr};
     std::array<ColorDotButton *, 4> colorButtons_ = {nullptr, nullptr, nullptr, nullptr};
     QList<QShortcut *> shortcuts_;
@@ -2417,6 +3106,10 @@ private:
     int fontPixelSize_ = 16;
     bool loadingSession_ = false;
     QStack<ClosedNote> closedStack_;
+    QJsonObject savedSpansMap_;
+    QJsonObject savedActiveColorsMap_;
+    QJsonObject savedActiveSlotsMap_;
+    QJsonObject savedActiveFormatsMap_;
 };
 
 } // namespace
@@ -2451,7 +3144,7 @@ int main(int argc, char *argv[]) {
 
     QCommandLineOption dirOption(
         QStringList() << "d" << "dir",
-        "Directory where note .txt files are stored (default: from config.json, $MIMENOTES_DIR, or ~/Notes).",
+        "Directory where note .txt files are stored (default: ~/Documents/Mimenotes or ~/Mimenotes).",
         "path");
     parser.addOption(dirOption);
 

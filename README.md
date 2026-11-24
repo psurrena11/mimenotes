@@ -8,12 +8,12 @@ A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching
   - `503 × 477` window size with `#212421` background.
   - Top bar with `14px` Semi-Bold tabs (`x = 20, y = 10`) and `+` button (`x = 479, y = 9`).
   - **Bottom-left formatting bar**: 4 icons (`Bold`, `Italic`, `Up Arrow`, `Down Arrow`) for toggling bold/italic and increasing/decreasing font size by `4px` (configurable via `"font_size_step"`).
-  - **Bottom-right color bar**: Four `12 × 12` circular color buttons spaced `16px` apart:
+  - **Bottom-right color & highlighter swatches**: Four `12 × 12` swatches spaced `16px` apart (circles in text color mode, squares in highlighter mode, with a centered black dot marking the active swatch):
     1. `#FFFFFF` (White)
     2. `#B4C9AE` (Sage Green)
     3. `#C3B7DB` (Soft Lavender)
     4. `#A8C9DA` (Sky Blue)
-- **Home-row leader commands (`jj`) & quick new tab (`ff`)**:
+- **Home-row leader commands (`jj`), tab commands (`ff`), delete line (`dd`), & quick search (`//`)**:
   - Type `jj` quickly followed by:
     - `a` → Toggle **Bold**
     - `s` → Toggle *Italic*
@@ -23,12 +23,19 @@ A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching
     - `k` → Color 2 (`#B4C9AE` Sage Green)
     - `l` → Color 3 (`#C3B7DB` Soft Lavender)
     - `;` → Color 4 (`#A8C9DA` Sky Blue)
-    - `h` → **Reset** formatting (`16px`, `#FFFFFF` White, no bold/italic)
-  - Type `ff` quickly → Create and switch to a **New Tab**
+    - `h` → **Reset** formatting (`16px`, `#FFFFFF` White, no bold/italic/highlight)
+    - `u` → Toggle **Highlighter Mode** (swatches turn into squares; text color automatically switches between `#000000` and `#FFFFFF` based on WCAG contrast ratio)
+  - Type `ff` quickly followed by:
+    - `t` → **New Tab** (`new_tab`)
+    - `j` → **Previous Tab** (`prev_tab`)
+    - `k` → **Next Tab** (`next_tab`)
+    - `r` → **Rename Tab** (`rename_tab`)
+  - Type `dd` quickly → **Delete Current Line** (`delete_line_trigger`)
+  - Type `//` quickly → Open **Quick Search Overlay** to filter and open any `.txt` file in your Mimenotes directory (`search_trigger`)
 - **16px default editor font**: Clean `16px` body text (`Ctrl+0` resets to the theme's `editor.font_size`).
 - **Auto-divider (`---`)**: Typing `---` automatically breaks to a new line, renders a full-width horizontal divider across the note, and moves the cursor to a new line below it (while saving cleanly as `---` in the underlying `.txt` file). Pressing `Backspace` right after a divider removes the divider in a single keystroke.
 - **Hot-reloading `config.json` & `themes/`**: Editing and saving `config.json` or the active theme JSON file in `themes/` live-updates the running window immediately.
-- **Folder-backed tabs & auto-save**: Each tab is a `.txt` file inside `~/Notes/` (or the path in `config.json` / `--dir <path>`). Saves automatically 300ms after typing stops and immediately on tab switch, rename, close, focus loss, or exit.
+- **Timestamped files, non-destructive tab close, & auto-save**: Each note is saved as `YYYY-MM-DD_HHMMSS_<Title>.txt` inside `~/Documents/Mimenotes/` (or `~/Mimenotes/` if `~/Documents` is not present, or a custom path in `config.json` / `--dir <path>`). The timestamp prefix is hidden in the tab bar so tabs stay clean while your folder stays chronologically sorted. Closing a tab never deletes files from disk—reopen any note anytime via `//` or `Ctrl+Shift+T`. Saves automatically 300ms after typing stops and immediately on tab switch, rename, close, focus loss, or exit.
 
 ## Configuration (`config.json`)
 
@@ -44,28 +51,33 @@ Example [config.json](file:///home/psurrena/Projects/notes/config.json):
   "theme": "default",
   "default_font_size": 16,
   "font_size_step": 4,
-  "notes_dir": "~/Notes",
+  "notes_dir": "~/Documents/Mimenotes",
   "keybindings": {
-    "new_tab": "Ctrl+T",
-    "new_tab_alt": "Ctrl+N",
+    "new_tab": "ff+t",
+    "new_tab_alt": "Ctrl+T",
     "close_tab": "Ctrl+W",
     "reopen_closed_tab": "Ctrl+Shift+T",
     "save": "Ctrl+S",
-    "rename_tab": "F2",
-    "rename_tab_alt": "Ctrl+R",
-    "next_tab": "Ctrl+Tab",
-    "next_tab_alt": "Ctrl+PgDown",
-    "prev_tab": "Ctrl+Shift+Tab",
-    "prev_tab_alt": "Ctrl+PgUp",
+    "rename_tab": "ff+r",
+    "rename_tab_alt": "F2",
+    "next_tab": "ff+k",
+    "next_tab_alt": "Ctrl+Tab",
+    "prev_tab": "ff+j",
+    "prev_tab_alt": "Ctrl+Shift+Tab",
     "zoom_in": "Ctrl+=",
     "zoom_out": "Ctrl+-",
     "zoom_reset": "Ctrl+0",
     "divider_trigger": "---",
+    "delete_line_trigger": "dd",
+    "delete_line_timeout_ms": 350,
+    "search_trigger": "//",
+    "search_timeout_ms": 350,
     "leader_trigger": "jj",
     "leader_timeout_ms": 350,
-    "new_tab_trigger": "ff",
-    "new_tab_timeout_ms": 350,
+    "tab_leader_trigger": "ff",
+    "tab_leader_timeout_ms": 350,
     "reset_format_key": "h",
+    "highlight_mode_key": "u",
     "color_keys": ["j", "k", "l", ";"],
     "format_keys": ["a", "s", "d", "f"]
   }

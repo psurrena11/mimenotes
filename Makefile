@@ -18,7 +18,7 @@ install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 	install -d $(DESTDIR)$(CONFIG_DIR)/themes
-	test -f $(DESTDIR)$(CONFIG_DIR)/config.json || install -m 644 config.json $(DESTDIR)$(CONFIG_DIR)/config.json
+	install -m 644 config.json $(DESTDIR)$(CONFIG_DIR)/config.json
 	install -m 644 themes/*.json $(DESTDIR)$(CONFIG_DIR)/themes/
 	install -d $(DESTDIR)$(ICONS_DIR)
 	install -m 644 mimenotes.svg $(DESTDIR)$(ICONS_DIR)/mimenotes.svg
