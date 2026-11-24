@@ -76,6 +76,9 @@ struct ThemeConfig {
     int editorFontSize = 16;
     QFont::Weight editorFontWeight = QFont::Normal;
 
+    // Footer active tool icon color (bold, italic, bigger, smaller)
+    QColor activeToolColor = QColor("#AAFFE4");
+
     // 4 bottom-right text/highlighter swatches (from Figma variables)
     std::array<QColor, 4> textColors = {
         QColor("#FFFFFF"), // swatch_1
@@ -366,6 +369,14 @@ ThemeConfig loadThemeFromFile(const QString &path) {
         t.editorFontWeight = parseFontWeight(e["font_weight"].toString(), t.editorFontWeight);
     }
 
+    if (root["footer"].isObject()) {
+        QJsonObject f = root["footer"].toObject();
+        t.activeToolColor = parseColor(f["active_tool_color"].toString(), t.activeToolColor);
+    }
+    if (root.contains("active_tool_color")) {
+        t.activeToolColor = parseColor(root["active_tool_color"].toString(), t.activeToolColor);
+    }
+
     if (root["text_colors"].isArray()) {
         QJsonArray arr = root["text_colors"].toArray();
         for (int i = 0; i < std::min<int>(4, arr.size()); ++i) {
@@ -403,6 +414,7 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
     }
 
     int configDefaultFontSize = -1;
+    QColor configActiveToolColor;
     if (!cfg.configFilePath.isEmpty()) {
         cfg.themesDirPath = QFileInfo(cfg.configFilePath).absoluteDir().filePath("themes");
         QFile file(cfg.configFilePath);
@@ -416,6 +428,9 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
                 }
                 if (root.contains("font_size_step")) {
                     cfg.keys.fontSizeStep = std::clamp(root["font_size_step"].toInt(4), 1, 24);
+                }
+                if (root.contains("active_tool_color")) {
+                    configActiveToolColor = parseColor(root["active_tool_color"].toString(), QColor());
                 }
                 cfg.notesDir = resolveNotesDirectory(root["notes_dir"].toString());
 
@@ -537,6 +552,9 @@ AppConfig loadAppConfig(const QString &explicitConfigPath, const QString &themeO
 
     if (configDefaultFontSize > 0) {
         cfg.theme.editorFontSize = configDefaultFontSize;
+    }
+    if (configActiveToolColor.isValid()) {
+        cfg.theme.activeToolColor = configActiveToolColor;
     }
 
     return cfg;
@@ -1315,10 +1333,11 @@ private:
 
     void applyThemeStyle() {
         QString sheet = QString(R"(
-            QTextEdit {
+            QTextEdit, QTextEdit:focus {
                 background-color: %1;
                 color: %2;
-                border: none;
+                border: 0px solid transparent;
+                outline: none;
                 selection-background-color: %3;
                 selection-color: %4;
             }
@@ -1521,7 +1540,7 @@ protected:
 
         QColor iconColor;
         if (highlighted_ || active_) {
-            iconColor = theme_.plusHoverColor;
+            iconColor = theme_.activeToolColor;
         } else if (hovered_) {
             iconColor = theme_.hoverTabColor;
         } else {
@@ -2007,10 +2026,11 @@ public:
                 border: 1px solid %2;
                 border-radius: 8px;
             }
-            QLineEdit {
+            QLineEdit, QLineEdit:focus {
                 background-color: %3;
                 color: %4;
-                border: none;
+                border: 0px solid transparent;
+                outline: none;
                 border-radius: 4px;
                 padding: 6px 8px;
                 selection-background-color: %5;
@@ -2231,7 +2251,7 @@ public:
 
         auto *editorContainer = new QWidget(centralRoot_);
         auto *editorLayout = new QVBoxLayout(editorContainer);
-        editorLayout->setContentsMargins(20, 14, 20, 14);
+        editorLayout->setContentsMargins(20, 20, 20, 20);
         editorLayout->setSpacing(0);
 
         editorStack_ = new QStackedWidget(editorContainer);
@@ -2426,11 +2446,19 @@ private:
 
     void syncFormatButtonsState() {
         NoteEditor *ed = currentEditor();
+        int defaultSz = appConfig_.theme.editorFontSize;
+        int curSz = ed ? ed->activeFontSize() : defaultSz;
         if (formatButtons_[0]) {
             formatButtons_[0]->setActive(ed && ed->isBoldActive());
         }
         if (formatButtons_[1]) {
             formatButtons_[1]->setActive(ed && ed->isItalicActive());
+        }
+        if (formatButtons_[2]) {
+            formatButtons_[2]->setActive(ed && curSz > defaultSz);
+        }
+        if (formatButtons_[3]) {
+            formatButtons_[3]->setActive(ed && curSz < defaultSz);
         }
         bool hl = ed && ed->isHighlightMode();
         int activeSlot = ed ? ed->activeTypingColorIndex() : 0;
@@ -3166,6 +3194,7 @@ private:
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
+    app.setStyle(QStringLiteral("Fusion"));
     QApplication::setApplicationName("mimenotes");
     QApplication::setApplicationDisplayName("Mime Notes");
     QApplication::setDesktopFileName("mimenotes");

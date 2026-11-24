@@ -5,10 +5,17 @@
 <circle id="Ellipse 7" cx="45" cy="31" r="27" fill="white"/>
 <circle id="Ellipse 8" cx="45" cy="48" r="5" fill="#FF8FBE"/>
 <rect id="Rectangle 3" x="30" y="63" width="30" height="4" fill="#D9D9D9"/>
-<rect id="Rectangle 4" x="25" y="73" width="40" height="4" fill="#D9D9D9"/>
-<rect id="Rectangle 5" x="20" y="82" width="50" height="4" fill="#D9D9D9"/>
+<rect id="Rectangle 4" x="25" y="72" width="40" height="4" fill="#D9D9D9"/>
+<rect id="Rectangle 5" x="20" y="81" width="50" height="4" fill="#D9D9D9"/>
 <circle id="Ellipse 9" cx="33" cy="27" r="7" fill="#212421"/>
 <circle id="Ellipse 10" cx="57" cy="27" r="7" fill="#212421"/>
 <path id="Vector 1" d="M74.5 18C61.3 17.2 35 11 23.5 8L32.5 2.5H55L74.5 9.5C80 12.6667 87.7 18.8 74.5 18Z" fill="#212421"/>
+<rect id="Rectangle 6" x="45" width="44" height="89" fill="url(#paint0_linear_0_1)"/>
 </g>
+<defs>
+<linearGradient id="paint0_linear_0_1" x1="38.5" y1="53" x2="89" y2="52.5" gradientUnits="userSpaceOnUse">
+<stop stop-color="#212421" stop-opacity="0"/>
+<stop offset="1" stop-color="#212421"/>
+</linearGradient>
+</defs>
 </svg>

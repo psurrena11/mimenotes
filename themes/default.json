@@ -24,6 +24,9 @@
     "font_size": 16,
     "font_weight": "normal"
   },
+  "footer": {
+    "active_tool_color": "#AAFFE4"
+  },
   "text_colors": [
     "#FFFFFF",
     "#FF8FBE",

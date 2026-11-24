@@ -2,6 +2,7 @@
   "theme": "default",
   "default_font_size": 16,
   "font_size_step": 4,
+  "active_tool_color": "#AAFFE4",
   "notes_dir": "~/Documents/Mimenotes",
   "keybindings": {
     "new_tab": "ff+t",
