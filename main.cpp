@@ -11,6 +11,7 @@
 #include <QFontDatabase>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QHelpEvent>
 #include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -39,6 +40,7 @@
 #include <QTextFragment>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -1759,7 +1761,7 @@ protected:
                                    : (isHovered ? theme_.hoverTabColor
                                                 : theme_.inactiveTabColor);
             p.setPen(textColor);
-            p.drawText(tl.textRect, Qt::AlignLeft | Qt::AlignVCenter, titles_[i]);
+            p.drawText(tl.textRect, Qt::AlignLeft | Qt::AlignVCenter, elideTabLabel(titles_[i]));
 
             if (isHovered) {
                 p.setFont(font_);
@@ -1882,6 +1884,28 @@ protected:
         QWidget::mouseDoubleClickEvent(event);
     }
 
+    bool event(QEvent *e) override {
+        if (e->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(e);
+            QPoint pos = he->pos();
+            if (plusHitRect().contains(pos)) {
+                QToolTip::showText(he->globalPos(), QStringLiteral("New Tab (ff + t)"), this, plusHitRect());
+                return true;
+            }
+            QList<TabLayout> layouts = computeLayouts();
+            for (int i = 0; i < layouts.size(); ++i) {
+                if (layouts[i].hitRect.contains(pos)) {
+                    QToolTip::showText(he->globalPos(), titles_[i], this, layouts[i].hitRect);
+                    return true;
+                }
+            }
+            QToolTip::hideText();
+            e->ignore();
+            return true;
+        }
+        return QWidget::event(e);
+    }
+
     bool eventFilter(QObject *watched, QEvent *event) override {
         if (watched == inlineEditor_ && event->type() == QEvent::KeyPress) {
             auto *ke = static_cast<QKeyEvent *>(event);
@@ -1909,6 +1933,14 @@ private:
         return plusButtonRect().adjusted(-6, -4, 6, 4);
     }
 
+    static QString elideTabLabel(const QString &title) {
+        constexpr int kMaxChars = 16;
+        if (title.size() > kMaxChars) {
+            return title.left(kMaxChars) + QStringLiteral("...");
+        }
+        return title;
+    }
+
     // Figma header: x = 20, y = 20, height = 17, gap = 20px between tabs
     QList<TabLayout> computeLayouts() const {
         QList<TabLayout> list;
@@ -1917,7 +1949,8 @@ private:
         int x = 20;
         int maxRight = width() - 46;
         for (int i = 0; i < titles_.size(); ++i) {
-            int textW = std::max(24, fm.horizontalAdvance(titles_[i]) + 2);
+            QString display = elideTabLabel(titles_[i]);
+            int textW = std::max(24, fm.horizontalAdvance(display) + 2);
             if (x + textW > maxRight && i > 0) {
                 break;
             }

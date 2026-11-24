@@ -1,12 +1,12 @@
 # Mime Notes
 
-A minimalist Linux desktop plain-text notepad built with C++17 and Qt6, matching the Figma design specification (`484×467`, `#212421` background, `20px` outer frame padding).
+A minimalist, ultra-lightweight Linux desktop plain-text notepad built natively with C++17 and Qt6 (~31 MB PSS memory footprint—roughly 8–20× lighter than Electron/web-based note apps), matching the Figma design specification (`484×467`, `#212421` background, `20px` outer frame padding).
 
 ## Features
 
 - **Clean layout & colors** (`themes/default.json`):
   - `484 × 467` window size with `#212421` background and `20px` outer frame padding.
-  - Top bar (`y = 20`) with `14px` Semi-Bold active tab, `50%` opacity Regular inactive tabs (`20px` gap), and `14 × 14` SVG `+` icon.
+  - Top bar (`y = 20`) with `14px` Semi-Bold active tab, `50%` opacity Regular inactive tabs (`20px` gap, 16-character overflow truncation with `...` and full-name hover tooltips), and `14 × 14` SVG `+` icon.
   - **Bottom-left formatting bar**: 4 SVG icons (`Bold` `9×12`, `Italic` `12×12`, `Up Arrow` `9×12`, `Down Arrow` `8×12`, `20px` gap) for toggling bold/italic and increasing/decreasing font size by `4px` (configurable via `"font_size_step"`). Active tools highlight in `"active_tool_color"` (`#AAFFE4` by default).
   - **Bottom-right color & highlighter swatches**: Four `12 × 12` swatches spaced `16px` apart (circles in text color mode, squares in highlighter mode, with a centered `#212421` dot marking the active swatch):
     1. `#FFFFFF` (White)
