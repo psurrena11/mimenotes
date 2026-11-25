@@ -338,6 +338,27 @@ QString resolveNotesDirectory(const QString &rawConfigPath) {
     return expandTilde(raw);
 }
 
+bool isMarkdownFile(const QString &path) {
+    return path.endsWith(QLatin1String(".md"), Qt::CaseInsensitive) ||
+           path.endsWith(QLatin1String(".markdown"), Qt::CaseInsensitive);
+}
+
+QString stripMarkdownForPreview(const QString &line) {
+    QString s = line.trimmed();
+    static const QRegularExpression kHeadingRe(QStringLiteral("^#{1,6}\\s+"));
+    static const QRegularExpression kTagRe(QStringLiteral("</?(?:span|mark|small|b|strong|i|em)(?:\\s+[^>]*)?>"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    s.remove(kHeadingRe);
+    s.remove(kTagRe);
+    s.replace(QStringLiteral("***"), QString());
+    s.replace(QStringLiteral("**"), QString());
+    s.replace(QStringLiteral("=="), QString());
+    s.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    s.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    s.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    return s.trimmed();
+}
+
 QString sanitizeTitle(const QString &raw) {
     QString s = raw.trimmed();
     s.replace('/', '-');
@@ -352,7 +373,10 @@ QString sanitizeTitle(const QString &raw) {
         s.remove(0, 1);
     }
     s = s.trimmed();
-    if (s.endsWith(".txt", Qt::CaseInsensitive)) {
+    if (s.endsWith(".md", Qt::CaseInsensitive)) {
+        s.chop(3);
+        s = s.trimmed();
+    } else if (s.endsWith(".txt", Qt::CaseInsensitive)) {
         s.chop(4);
         s = s.trimmed();
     }
@@ -664,10 +688,31 @@ public:
 
         applyThemeStyle();
         applyTypingFormatToCursor();
+
+        connect(this, &QTextEdit::cursorPositionChanged, this, [this]() {
+            if (suppressCursorSync_) {
+                return;
+            }
+            QTextBlock blk = textCursor().block();
+            if (!blk.isValid() || isDividerBlock(blk)) {
+                return;
+            }
+            int blkPx = pixelSizeForTier(blockSizeTier(blk));
+            if (activeFontSize_ != blkPx) {
+                activeFontSize_ = blkPx;
+                applyTypingFormatToCursor();
+                if (onToolbarSyncNeeded) {
+                    onToolbarSyncNeeded();
+                }
+            }
+        });
     }
+
+    static constexpr int kSmallBlockProperty = QTextFormat::UserProperty + 1;
 
     std::function<void(bool)> onLeaderModeChanged;
     std::function<void()> onFormattingChanged;
+    std::function<void()> onToolbarSyncNeeded;
     std::function<void()> onNewTabTriggered;
     std::function<void()> onPrevTabTriggered;
     std::function<void()> onNextTabTriggered;
@@ -681,38 +726,69 @@ public:
     bool isHighlightMode() const { return highlightMode_; }
     int activeFontSize() const { return activeFontSize_; }
 
+    int pixelSizeForTier(int tier) const {
+        int clamped = std::clamp(tier, -1, 3);
+        return std::clamp(theme_.editorFontSize + clamped * keys_.fontSizeStep, 10, 72);
+    }
+
+    int blockSizeTier(const QTextBlock &block) const {
+        if (!block.isValid()) {
+            return 0;
+        }
+        QTextBlockFormat bfmt = block.blockFormat();
+        int h = bfmt.headingLevel();
+        if (h == 1) return 3; // #
+        if (h == 2) return 2; // ##
+        if (h == 3) return 1; // ###
+        if (h > 3) return 1;
+        if (bfmt.boolProperty(kSmallBlockProperty)) {
+            return -1; // <small>
+        }
+        return 0;
+    }
+
     void updateConfig(const ThemeConfig &newTheme, const KeybindingsConfig &newKeys) {
         std::array<QColor, 4> oldPalette = theme_.textColors;
-        int oldDefaultSize = theme_.editorFontSize;
         theme_ = newTheme;
         keys_ = newKeys;
         applyThemeStyle();
 
-        if (activeFontSize_ == oldDefaultSize) {
-            activeFontSize_ = theme_.editorFontSize;
-        }
+        suppressCursorSync_ = true;
 
-        // Remap existing styled text spans
+        // Remap existing styled text spans and heading sizes
         QTextBlock block = document()->begin();
         QTextCursor cursor(document());
         while (block.isValid()) {
             if (!isDividerBlock(block)) {
+                int tier = blockSizeTier(block);
+                int tierPx = pixelSizeForTier(tier);
                 for (auto it = block.begin(); !it.atEnd(); ++it) {
                     QTextFragment frag = it.fragment();
                     if (!frag.isValid()) continue;
                     QTextCharFormat curFmt = frag.charFormat();
-                    QColor fragCol = curFmt.foreground().color();
-                    int slot = matchColorSlot(fragCol, oldPalette);
-
                     QFont curFont = curFmt.font();
-                    int px = curFont.pixelSize() > 0 ? curFont.pixelSize() : theme_.editorFontSize;
                     bool b = curFont.weight() >= QFont::Bold;
                     bool itl = curFont.italic();
+                    int px = (tier != 0) ? tierPx
+                                         : (curFont.pixelSize() > 0 ? curFont.pixelSize() : theme_.editorFontSize);
 
                     cursor.setPosition(frag.position());
                     cursor.setPosition(frag.position() + frag.length(), QTextCursor::KeepAnchor);
                     QTextCharFormat fmt;
-                    fmt.setForeground(slot >= 0 ? theme_.textColors[slot] : fragCol);
+                    if (curFmt.background().style() != Qt::NoBrush &&
+                        curFmt.background().color().isValid() &&
+                        curFmt.background().color().alpha() > 0) {
+                        QColor bgCol = curFmt.background().color();
+                        int bgSlot = matchColorSlot(bgCol, oldPalette);
+                        QColor mappedBg = (bgSlot >= 0) ? theme_.textColors[bgSlot] : bgCol;
+                        fmt.setBackground(mappedBg);
+                        fmt.setForeground(contrastTextColor(mappedBg));
+                    } else {
+                        QColor fragCol = curFmt.foreground().color();
+                        int slot = matchColorSlot(fragCol, oldPalette);
+                        fmt.setBackground(Qt::NoBrush);
+                        fmt.setForeground(slot >= 0 ? theme_.textColors[slot] : fragCol);
+                    }
                     fmt.setFont(makeFontWithFallback(
                         theme_.editorFontFamily,
                         px,
@@ -727,8 +803,10 @@ public:
         if (activeColorIndex_ >= 0 && activeColorIndex_ < 4) {
             activeColor_ = theme_.textColors[activeColorIndex_];
         }
+        activeFontSize_ = pixelSizeForTier(blockSizeTier(textCursor().block()));
         formatExistingDividers();
         applyTypingFormatToCursor();
+        suppressCursorSync_ = false;
         viewport()->update();
     }
 
@@ -820,17 +898,85 @@ public:
         }
     }
 
-    void adjustTypingFontSize(int deltaPx) {
-        activeFontSize_ = std::clamp(activeFontSize_ + deltaPx, 8, 72);
-        QTextCursor cursor = textCursor();
-        if (cursor.hasSelection()) {
-            applySpanFontOverride(cursor, [deltaPx](bool &, bool &, int &px) {
-                px = std::clamp(px + deltaPx, 8, 72);
-            });
+    void stepHeadingTier(int deltaTier) {
+        if (deltaTier == 0) {
+            return;
         }
+        QTextCursor cursor = textCursor();
+        int selStart = cursor.hasSelection() ? cursor.selectionStart() : cursor.position();
+        int selEnd = cursor.hasSelection() ? cursor.selectionEnd() : cursor.position();
+
+        QTextBlock startBlk = document()->findBlock(selStart);
+        QTextBlock endBlk = document()->findBlock(selEnd);
+        if (cursor.hasSelection() && endBlk.isValid() && selEnd == endBlk.position() && endBlk != startBlk) {
+            endBlk = endBlk.previous();
+        }
+
+        suppressCursorSync_ = true;
+        QTextCursor editCursor(document());
+        editCursor.beginEditBlock();
+        int lastTier = blockSizeTier(startBlk);
+        QTextBlock blk = startBlk;
+        while (blk.isValid()) {
+            if (!isDividerBlock(blk)) {
+                int newTier = std::clamp(blockSizeTier(blk) + deltaTier, -1, 3);
+                applyTierToBlock(blk, newTier);
+                lastTier = newTier;
+            }
+            if (blk == endBlk) {
+                break;
+            }
+            blk = blk.next();
+        }
+        editCursor.endEditBlock();
+        activeFontSize_ = pixelSizeForTier(lastTier);
         applyTypingFormatToCursor();
+        suppressCursorSync_ = false;
         if (onFormattingChanged) {
             onFormattingChanged();
+        }
+    }
+
+    void resetHeadingTier() {
+        QTextCursor cursor = textCursor();
+        int selStart = cursor.hasSelection() ? cursor.selectionStart() : cursor.position();
+        int selEnd = cursor.hasSelection() ? cursor.selectionEnd() : cursor.position();
+
+        QTextBlock startBlk = document()->findBlock(selStart);
+        QTextBlock endBlk = document()->findBlock(selEnd);
+        if (cursor.hasSelection() && endBlk.isValid() && selEnd == endBlk.position() && endBlk != startBlk) {
+            endBlk = endBlk.previous();
+        }
+
+        suppressCursorSync_ = true;
+        QTextCursor editCursor(document());
+        editCursor.beginEditBlock();
+        QTextBlock blk = startBlk;
+        while (blk.isValid()) {
+            if (!isDividerBlock(blk)) {
+                applyTierToBlock(blk, 0);
+            }
+            if (blk == endBlk) {
+                break;
+            }
+            blk = blk.next();
+        }
+        editCursor.endEditBlock();
+        activeFontSize_ = pixelSizeForTier(0);
+        applyTypingFormatToCursor();
+        suppressCursorSync_ = false;
+        if (onFormattingChanged) {
+            onFormattingChanged();
+        }
+    }
+
+    void adjustTypingFontSize(int deltaPx) {
+        if (deltaPx > 0) {
+            stepHeadingTier(1);
+        } else if (deltaPx < 0) {
+            stepHeadingTier(-1);
+        } else {
+            resetHeadingTier();
         }
     }
 
@@ -842,13 +988,38 @@ public:
         highlightMode_ = false;
         activeFontSize_ = theme_.editorFontSize;
 
+        suppressCursorSync_ = true;
         QTextCursor cursor = textCursor();
         if (cursor.hasSelection()) {
+            int selStart = cursor.selectionStart();
+            int selEnd = cursor.selectionEnd();
+            QTextBlock startBlk = document()->findBlock(selStart);
+            QTextBlock endBlk = document()->findBlock(selEnd);
+            if (endBlk.isValid() && selEnd == endBlk.position() && endBlk != startBlk) {
+                endBlk = endBlk.previous();
+            }
+            QTextCursor editCursor(document());
+            editCursor.beginEditBlock();
+            QTextBlock blk = startBlk;
+            while (blk.isValid()) {
+                if (!isDividerBlock(blk)) {
+                    applyTierToBlock(blk, 0);
+                }
+                if (blk == endBlk) break;
+                blk = blk.next();
+            }
             QTextCharFormat fmt = currentTypingCharFormat();
             cursor.mergeCharFormat(fmt);
+            editCursor.endEditBlock();
             formatExistingDividers();
+        } else if (cursor.block().isValid() && !isDividerBlock(cursor.block()) && blockSizeTier(cursor.block()) != 0) {
+            QTextCursor editCursor(document());
+            editCursor.beginEditBlock();
+            applyTierToBlock(cursor.block(), 0);
+            editCursor.endEditBlock();
         }
         applyTypingFormatToCursor();
+        suppressCursorSync_ = false;
         if (onFormattingChanged) {
             onFormattingChanged();
         }
@@ -968,6 +1139,273 @@ public:
         }
         formatExistingDividers();
         applyTypingFormatToCursor();
+    }
+
+    QString exportMarkdown() const {
+        struct MdRun {
+            QString text;
+            bool bold = false;
+            bool italic = false;
+            QString fgHex; // empty => default theme text color
+            QString bgHex; // empty => no highlight
+        };
+
+        auto escapeForMd = [](const QString &raw) -> QString {
+            QString out;
+            out.reserve(raw.size());
+            for (int i = 0; i < raw.size(); ++i) {
+                QChar ch = raw[i];
+                if (ch == QLatin1Char('<') && i + 1 < raw.size() &&
+                    (raw[i + 1].isLetter() || raw[i + 1] == QLatin1Char('/'))) {
+                    out += QStringLiteral("&lt;");
+                } else {
+                    out += ch;
+                }
+            }
+            return out;
+        };
+
+        auto formatStyledRuns = [&](const QList<MdRun> &runs, bool isHighlighted) -> QString {
+            QString out;
+            bool prevEndedWithStar = false;
+            for (const MdRun &r : runs) {
+                if (r.text.isEmpty()) {
+                    continue;
+                }
+                if (!r.bold && !r.italic) {
+                    QString esc = escapeForMd(r.text);
+                    out += esc;
+                    prevEndedWithStar = esc.endsWith(QLatin1Char('*'));
+                    continue;
+                }
+
+                // Keep leading/trailing whitespace outside Markdown * delimiters
+                int firstNonSpace = 0;
+                while (firstNonSpace < r.text.size() && r.text[firstNonSpace].isSpace()) {
+                    ++firstNonSpace;
+                }
+                int lastNonSpace = r.text.size() - 1;
+                while (lastNonSpace >= firstNonSpace && r.text[lastNonSpace].isSpace()) {
+                    --lastNonSpace;
+                }
+
+                if (firstNonSpace > lastNonSpace) {
+                    // Whitespace-only run
+                    QString esc = escapeForMd(r.text);
+                    out += esc;
+                    prevEndedWithStar = false;
+                    Q_UNUSED(isHighlighted);
+                    continue;
+                }
+
+                QString lead = escapeForMd(r.text.left(firstNonSpace));
+                QString core = escapeForMd(r.text.mid(firstNonSpace, lastNonSpace - firstNonSpace + 1));
+                QString trail = escapeForMd(r.text.mid(lastNonSpace + 1));
+
+                bool useHtmlTags = prevEndedWithStar && lead.isEmpty();
+                out += lead;
+                if (useHtmlTags) {
+                    if (r.bold && r.italic) {
+                        out += QStringLiteral("<b><i>") + core + QStringLiteral("</i></b>");
+                    } else if (r.bold) {
+                        out += QStringLiteral("<b>") + core + QStringLiteral("</b>");
+                    } else {
+                        out += QStringLiteral("<i>") + core + QStringLiteral("</i>");
+                    }
+                    prevEndedWithStar = false;
+                } else {
+                    QString marker = (r.bold && r.italic)
+                                         ? QStringLiteral("***")
+                                         : (r.bold ? QStringLiteral("**") : QStringLiteral("*"));
+                    out += marker + core + marker;
+                    prevEndedWithStar = trail.isEmpty();
+                }
+                out += trail;
+            }
+            return out;
+        };
+
+        QStringList lines;
+        QTextBlock block = document()->begin();
+        const QRgb defaultRgb = theme_.textColors[0].rgb();
+
+        while (block.isValid()) {
+            if (isDividerBlock(block)) {
+                lines.append(QStringLiteral("---"));
+                block = block.next();
+                continue;
+            }
+
+            int tier = blockSizeTier(block);
+            QList<MdRun> runs;
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                QTextFragment frag = it.fragment();
+                if (!frag.isValid()) continue;
+                QString txt = frag.text();
+                if (txt.isEmpty()) continue;
+
+                QTextCharFormat fmt = frag.charFormat();
+                QFont f = fmt.font();
+                bool bold = f.weight() >= QFont::Bold;
+                bool italic = f.italic();
+
+                QString bgHex;
+                if (fmt.background().style() != Qt::NoBrush) {
+                    QColor bgCol = fmt.background().color();
+                    if (bgCol.isValid() && bgCol.alpha() > 0) {
+                        bgHex = bgCol.name(QColor::HexRgb).toUpper();
+                    }
+                }
+
+                QString fgHex;
+                if (bgHex.isEmpty()) {
+                    QColor fgCol = fmt.foreground().color();
+                    if (fgCol.isValid() && fgCol.alpha() > 0 && fgCol.rgb() != defaultRgb) {
+                        fgHex = fgCol.name(QColor::HexRgb).toUpper();
+                    }
+                }
+
+                if (!runs.isEmpty() &&
+                    runs.last().bold == bold &&
+                    runs.last().italic == italic &&
+                    runs.last().fgHex == fgHex &&
+                    runs.last().bgHex == bgHex) {
+                    runs.last().text += txt;
+                } else {
+                    runs.append(MdRun{txt, bold, italic, fgHex, bgHex});
+                }
+            }
+
+            // Group contiguous runs sharing the same (fgHex, bgHex) for clean outer <span>/<mark> tags
+            QString lineMd;
+            int idx = 0;
+            while (idx < runs.size()) {
+                const QString fgHex = runs[idx].fgHex;
+                const QString bgHex = runs[idx].bgHex;
+                QList<MdRun> group;
+                while (idx < runs.size() && runs[idx].fgHex == fgHex && runs[idx].bgHex == bgHex) {
+                    group.append(runs[idx]);
+                    ++idx;
+                }
+
+                QString inner = formatStyledRuns(group, !bgHex.isEmpty());
+                if (!bgHex.isEmpty()) {
+                    QString contrastHex = contrastTextColor(QColor(bgHex)).name(QColor::HexRgb).toUpper();
+                    lineMd += QStringLiteral("<mark style=\"background:%1;color:%2\">%3</mark>")
+                                  .arg(bgHex, contrastHex, inner);
+                } else if (!fgHex.isEmpty()) {
+                    lineMd += QStringLiteral("<span style=\"color:%1\">%2</span>").arg(fgHex, inner);
+                } else {
+                    lineMd += inner;
+                }
+            }
+
+            if (tier == 3) {
+                lines.append(QStringLiteral("# ") + lineMd);
+            } else if (tier == 2) {
+                lines.append(QStringLiteral("## ") + lineMd);
+            } else if (tier == 1) {
+                lines.append(QStringLiteral("### ") + lineMd);
+            } else if (tier == -1) {
+                lines.append(lineMd.isEmpty() ? QString() : (QStringLiteral("<small>") + lineMd + QStringLiteral("</small>")));
+            } else {
+                lines.append(lineMd);
+            }
+
+            block = block.next();
+        }
+
+        return lines.join(QLatin1Char('\n'));
+    }
+
+    void importMarkdown(const QString &markdown) {
+        suppressCursorSync_ = true;
+        document()->clear();
+
+        QString normalized = markdown;
+        normalized.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+        QStringList lines = normalized.split(QLatin1Char('\n'));
+
+        static const QRegularExpression kHrRe(QStringLiteral("^\\s*(?:(?:-\\s*){3,}|(?:\\*\\s*){3,}|(?:_\\s*){3,})\\s*$"));
+        static const QRegularExpression kHeadingRe(QStringLiteral("^(#{1,6})\\s+(.*)$"));
+
+        QTextCursor cursor(document());
+        cursor.beginEditBlock();
+
+        for (int i = 0; i < lines.size(); ++i) {
+            if (i > 0) {
+                cursor.insertBlock();
+            }
+            QString line = lines[i];
+
+            if (kHrRe.match(line).hasMatch()) {
+                QTextBlockFormat bfmt;
+                bfmt.setHeadingLevel(0);
+                bfmt.setProperty(kSmallBlockProperty, false);
+                cursor.setBlockFormat(bfmt);
+
+                QTextCharFormat divFmt;
+                divFmt.setForeground(Qt::transparent);
+                divFmt.setFont(makeFontWithFallback(
+                    theme_.editorFontFamily,
+                    theme_.editorFontSize,
+                    theme_.editorFontWeight,
+                    false));
+                cursor.insertText(QStringLiteral("---"), divFmt);
+                continue;
+            }
+
+            int tier = 0;
+            QRegularExpressionMatch hm = kHeadingRe.match(line);
+            if (hm.hasMatch()) {
+                int hashes = hm.captured(1).size();
+                if (hashes == 1) tier = 3;
+                else if (hashes == 2) tier = 2;
+                else tier = 1;
+                line = hm.captured(2);
+            } else {
+                QString trimmed = line.trimmed();
+                if (trimmed.startsWith(QStringLiteral("<small>"), Qt::CaseInsensitive) &&
+                    trimmed.endsWith(QStringLiteral("</small>"), Qt::CaseInsensitive)) {
+                    auto [closeStart, closeEnd] = findClosingHtmlTag(trimmed, 7, QStringLiteral("small"));
+                    if (closeEnd == trimmed.size() && closeStart >= 7) {
+                        tier = -1;
+                        line = trimmed.mid(7, closeStart - 7);
+                    }
+                }
+            }
+
+            QTextBlockFormat bfmt;
+            bfmt.setHeadingLevel(tier == 3 ? 1 : (tier == 2 ? 2 : (tier == 1 ? 3 : 0)));
+            bfmt.setProperty(kSmallBlockProperty, tier == -1);
+            cursor.setBlockFormat(bfmt);
+
+            int px = pixelSizeForTier(tier);
+            QTextCharFormat defaultBlockFmt;
+            defaultBlockFmt.setForeground(theme_.textColors[0]);
+            defaultBlockFmt.setBackground(Qt::NoBrush);
+            defaultBlockFmt.setFont(makeFontWithFallback(
+                theme_.editorFontFamily,
+                px,
+                theme_.editorFontWeight,
+                false));
+            cursor.setBlockCharFormat(defaultBlockFmt);
+
+            InlineMdState baseState;
+            baseState.pixelSize = px;
+            parseMarkdownInline(cursor, line, baseState);
+        }
+
+        cursor.endEditBlock();
+
+        QTextCursor startCursor(document());
+        startCursor.movePosition(QTextCursor::Start);
+        setTextCursor(startCursor);
+        activeFontSize_ = pixelSizeForTier(blockSizeTier(startCursor.block()));
+        formatExistingDividers();
+        applyTypingFormatToCursor();
+        suppressCursorSync_ = false;
     }
 
 protected:
@@ -1247,6 +1685,21 @@ protected:
                     event->accept();
                     return;
                 }
+                if (cursor.atBlockStart() && blockSizeTier(cursor.block()) != 0) {
+                    suppressCursorSync_ = true;
+                    QTextCursor editCursor(document());
+                    editCursor.beginEditBlock();
+                    applyTierToBlock(cursor.block(), 0);
+                    editCursor.endEditBlock();
+                    activeFontSize_ = pixelSizeForTier(0);
+                    applyTypingFormatToCursor();
+                    suppressCursorSync_ = false;
+                    if (onFormattingChanged) {
+                        onFormattingChanged();
+                    }
+                    event->accept();
+                    return;
+                }
                 if (cursor.atBlockStart() && cursor.block().previous().isValid() &&
                     isDividerBlock(cursor.block().previous())) {
                     removeDividerBlock(cursor.block().previous());
@@ -1298,6 +1751,33 @@ protected:
             }
         }
 
+        // 4B. Pressing Enter at the end of a heading/small line starts the next line as Normal text
+        if (!cursor.hasSelection() &&
+            !isDividerBlock(cursor.block()) &&
+            (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+            noModifiers &&
+            cursor.atBlockEnd() &&
+            blockSizeTier(cursor.block()) != 0) {
+            suppressCursorSync_ = true;
+            cursor.beginEditBlock();
+            QTextBlockFormat normalBfmt;
+            normalBfmt.setHeadingLevel(0);
+            normalBfmt.setProperty(kSmallBlockProperty, false);
+            activeFontSize_ = pixelSizeForTier(0);
+            QTextCharFormat normalCfmt = currentTypingCharFormat();
+            cursor.insertBlock(normalBfmt, normalCfmt);
+            cursor.setCharFormat(normalCfmt);
+            cursor.endEditBlock();
+            setTextCursor(cursor);
+            applyTypingFormatToCursor();
+            suppressCursorSync_ = false;
+            if (onToolbarSyncNeeded) {
+                onToolbarSyncNeeded();
+            }
+            event->accept();
+            return;
+        }
+
         // 5. Ensure typed characters always use the currently selected typing color/bold/italic/size
         if (!event->text().isEmpty() && noModifiers) {
             applyTypingFormatToCursor();
@@ -1305,7 +1785,39 @@ protected:
 
         QTextEdit::keyPressEvent(event);
 
-        // 6. Check if the user just finished typing the divider trigger (default "---")
+        // 6A. Auto-convert "# ", "## ", "### " typed at the start of a line into Markdown headings
+        if (event->text() == QLatin1String(" ") && noModifiers) {
+            QTextCursor after = textCursor();
+            QTextBlock blk = after.block();
+            if (!after.hasSelection() && !isDividerBlock(blk)) {
+                int posInBlk = after.positionInBlock();
+                QString prefix = blk.text().left(posInBlk);
+                int targetTier = 0;
+                if (prefix == QLatin1String("# ")) targetTier = 3;
+                else if (prefix == QLatin1String("## ")) targetTier = 2;
+                else if (prefix == QLatin1String("### ")) targetTier = 1;
+
+                if (targetTier > 0) {
+                    suppressCursorSync_ = true;
+                    after.beginEditBlock();
+                    after.movePosition(QTextCursor::StartOfBlock);
+                    after.movePosition(QTextCursor::Right, QTextCursor::KeepAnchor, prefix.size());
+                    after.removeSelectedText();
+                    applyTierToBlock(after.block(), targetTier);
+                    after.endEditBlock();
+                    setTextCursor(after);
+                    activeFontSize_ = pixelSizeForTier(targetTier);
+                    applyTypingFormatToCursor();
+                    suppressCursorSync_ = false;
+                    if (onFormattingChanged) {
+                        onFormattingChanged();
+                    }
+                    return;
+                }
+            }
+        }
+
+        // 6B. Check if the user just finished typing the divider trigger (default "---")
         const QString &divTrig = keys_.dividerTrigger;
         if (!divTrig.isEmpty() && !event->text().isEmpty() &&
             divTrig.endsWith(event->text())) {
@@ -1362,6 +1874,7 @@ private:
             int start;
             int end;
             QColor color;
+            QBrush bgBrush;
             bool italic;
             bool bold;
             int px;
@@ -1382,12 +1895,13 @@ private:
                         QTextCharFormat cfmt = frag.charFormat();
                         QColor col = cfmt.foreground().color();
                         if (!col.isValid() || col.alpha() == 0) col = activeColor_;
+                        QBrush bg = cfmt.background();
                         QFont f = cfmt.font();
                         bool itl = f.italic();
                         bool b = f.weight() >= QFont::Bold;
                         int px = f.pixelSize() > 0 ? f.pixelSize() : activeFontSize_;
                         mutator(itl, b, px);
-                        mods.append(SpanMod{oStart, oEnd, col, itl, b, px});
+                        mods.append(SpanMod{oStart, oEnd, col, bg, itl, b, px});
                     }
                 }
             }
@@ -1401,6 +1915,7 @@ private:
             editCursor.setPosition(m.end, QTextCursor::KeepAnchor);
             QTextCharFormat fmt;
             fmt.setForeground(m.color);
+            fmt.setBackground(m.bgBrush);
             fmt.setFont(makeFontWithFallback(
                 theme_.editorFontFamily,
                 m.px,
@@ -1410,6 +1925,316 @@ private:
         }
         editCursor.endEditBlock();
         formatExistingDividers();
+    }
+
+    struct InlineMdState {
+        bool bold = false;
+        bool italic = false;
+        QColor fgColor;
+        QColor bgColor;
+        int pixelSize = 16;
+    };
+
+    void applyTierToBlock(const QTextBlock &block, int tier) {
+        if (!block.isValid() || isDividerBlock(block)) {
+            return;
+        }
+        int clamped = std::clamp(tier, -1, 3);
+        int px = pixelSizeForTier(clamped);
+
+        QTextCursor c(block);
+        QTextBlockFormat bfmt = block.blockFormat();
+        bfmt.setHeadingLevel(clamped == 3 ? 1 : (clamped == 2 ? 2 : (clamped == 1 ? 3 : 0)));
+        bfmt.setProperty(kSmallBlockProperty, clamped == -1);
+        c.setBlockFormat(bfmt);
+
+        QTextCharFormat bcf = block.charFormat();
+        QFont bf = bcf.font();
+        bcf.setFont(makeFontWithFallback(
+            theme_.editorFontFamily,
+            px,
+            bf.weight() >= QFont::Bold ? QFont::Bold : theme_.editorFontWeight,
+            bf.italic()));
+        c.setBlockCharFormat(bcf);
+
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            QTextFragment frag = it.fragment();
+            if (!frag.isValid()) continue;
+            QTextCharFormat curFmt = frag.charFormat();
+            QFont f = curFmt.font();
+            QTextCharFormat upd;
+            upd.setFont(makeFontWithFallback(
+                theme_.editorFontFamily,
+                px,
+                f.weight() >= QFont::Bold ? QFont::Bold : theme_.editorFontWeight,
+                f.italic()));
+            c.setPosition(frag.position());
+            c.setPosition(frag.position() + frag.length(), QTextCursor::KeepAnchor);
+            c.mergeCharFormat(upd);
+        }
+    }
+
+    static QString decodeHtmlEntities(const QString &s) {
+        QString out = s;
+        out.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+        out.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+        out.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+        return out;
+    }
+
+    static QColor parseCssColorProp(const QString &styleAttr, const QStringList &propNames) {
+        for (const QString &prop : propNames) {
+            QRegularExpression re(
+                QStringLiteral("(?:^|;)\\s*%1\\s*:\\s*([^;\"']+)").arg(QRegularExpression::escape(prop)),
+                QRegularExpression::CaseInsensitiveOption);
+            QRegularExpressionMatch m = re.match(styleAttr);
+            if (m.hasMatch()) {
+                QColor c(m.captured(1).trimmed());
+                if (c.isValid()) {
+                    return c;
+                }
+            }
+        }
+        return {};
+    }
+
+    static std::pair<int, int> findClosingHtmlTag(const QString &text, int searchFrom, const QString &tagName) {
+        QRegularExpression tokenRe(
+            QStringLiteral("<(/?)%1(?:\\s+[^>]*)?>").arg(QRegularExpression::escape(tagName)),
+            QRegularExpression::CaseInsensitiveOption);
+        int depth = 1;
+        int pos = searchFrom;
+        while (pos < text.size()) {
+            QRegularExpressionMatch m = tokenRe.match(text, pos);
+            if (!m.hasMatch()) {
+                return {-1, -1};
+            }
+            bool isClose = !m.captured(1).isEmpty();
+            if (isClose) {
+                --depth;
+                if (depth == 0) {
+                    return {static_cast<int>(m.capturedStart()), static_cast<int>(m.capturedEnd())};
+                }
+            } else {
+                ++depth;
+            }
+            pos = static_cast<int>(m.capturedEnd());
+        }
+        return {-1, -1};
+    }
+
+    void emitMarkdownChunk(QTextCursor &cursor, const QString &raw, const InlineMdState &state) const {
+        if (raw.isEmpty()) {
+            return;
+        }
+        QTextCharFormat fmt;
+        if (state.bgColor.isValid()) {
+            fmt.setBackground(state.bgColor);
+            fmt.setForeground(state.fgColor.isValid() ? state.fgColor : contrastTextColor(state.bgColor));
+        } else {
+            fmt.setBackground(Qt::NoBrush);
+            fmt.setForeground(state.fgColor.isValid() ? state.fgColor : theme_.textColors[0]);
+        }
+        fmt.setFont(makeFontWithFallback(
+            theme_.editorFontFamily,
+            state.pixelSize,
+            state.bold ? QFont::Bold : theme_.editorFontWeight,
+            state.italic));
+        cursor.insertText(decodeHtmlEntities(raw), fmt);
+    }
+
+    void parseMarkdownInline(QTextCursor &cursor, const QString &text, const InlineMdState &state) const {
+        static const QRegularExpression kOpenTagRe(
+            QStringLiteral("^<(span|mark|small|b|strong|i|em)(?:\\s+([^>]*))?>"),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression kStyleAttrRe(
+            QStringLiteral("style\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')"),
+            QRegularExpression::CaseInsensitiveOption);
+
+        auto isWordChar = [](QChar ch) {
+            return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+        };
+
+        QString plainBuf;
+        auto flushPlain = [&]() {
+            if (!plainBuf.isEmpty()) {
+                emitMarkdownChunk(cursor, plainBuf, state);
+                plainBuf.clear();
+            }
+        };
+
+        const int len = text.size();
+        int i = 0;
+        while (i < len) {
+            // 1. Backslash escapes (\*, \_, \\)
+            if (text[i] == QLatin1Char('\\') && i + 1 < len &&
+                (text[i + 1] == QLatin1Char('*') || text[i + 1] == QLatin1Char('_') || text[i + 1] == QLatin1Char('\\'))) {
+                plainBuf.append(text[i + 1]);
+                i += 2;
+                continue;
+            }
+
+            // 2. Inline HTML tags: <span>, <mark>, <small>, <b>, <strong>, <i>, <em>
+            if (text[i] == QLatin1Char('<')) {
+                QRegularExpressionMatch tm = kOpenTagRe.match(text.mid(i));
+                if (tm.hasMatch()) {
+                    QString tag = tm.captured(1).toLower();
+                    QString attrs = tm.captured(2);
+                    int afterOpen = i + static_cast<int>(tm.capturedLength());
+                    auto [closeStart, closeEnd] = findClosingHtmlTag(text, afterOpen, tag);
+                    if (closeStart >= afterOpen) {
+                        flushPlain();
+                        InlineMdState next = state;
+                        if (tag == QLatin1String("b") || tag == QLatin1String("strong")) {
+                            next.bold = true;
+                        } else if (tag == QLatin1String("i") || tag == QLatin1String("em")) {
+                            next.italic = true;
+                        } else if (tag == QLatin1String("small")) {
+                            next.pixelSize = pixelSizeForTier(-1);
+                        } else if (tag == QLatin1String("span") || tag == QLatin1String("mark")) {
+                            QString styleVal;
+                            QRegularExpressionMatch sm = kStyleAttrRe.match(attrs);
+                            if (sm.hasMatch()) {
+                                styleVal = !sm.captured(1).isEmpty() ? sm.captured(1) : sm.captured(2);
+                            }
+                            QColor bg = parseCssColorProp(styleVal, {QStringLiteral("background-color"), QStringLiteral("background")});
+                            QColor fg = parseCssColorProp(styleVal, {QStringLiteral("color")});
+                            if (tag == QLatin1String("mark")) {
+                                next.bgColor = bg.isValid() ? bg : theme_.textColors[2];
+                                next.fgColor = fg.isValid() ? fg : contrastTextColor(next.bgColor);
+                            } else {
+                                if (bg.isValid()) {
+                                    next.bgColor = bg;
+                                    next.fgColor = fg.isValid() ? fg : contrastTextColor(bg);
+                                } else if (fg.isValid()) {
+                                    next.fgColor = fg;
+                                }
+                            }
+                        }
+                        parseMarkdownInline(cursor, text.mid(afterOpen, closeStart - afterOpen), next);
+                        i = closeEnd;
+                        continue;
+                    }
+                }
+            }
+
+            // 3. Obsidian highlight ==text==
+            if (i + 1 < len && text[i] == QLatin1Char('=') && text[i + 1] == QLatin1Char('=') &&
+                i + 2 < len && !text[i + 2].isSpace()) {
+                int j = text.indexOf(QStringLiteral("=="), i + 2);
+                if (j > i + 2 && !text[j - 1].isSpace()) {
+                    flushPlain();
+                    InlineMdState next = state;
+                    next.bgColor = theme_.textColors[2];
+                    next.fgColor = contrastTextColor(next.bgColor);
+                    parseMarkdownInline(cursor, text.mid(i + 2, j - (i + 2)), next);
+                    i = j + 2;
+                    continue;
+                }
+            }
+
+            // 4. ***bold+italic***
+            if (i + 2 < len && text[i] == QLatin1Char('*') && text[i + 1] == QLatin1Char('*') && text[i + 2] == QLatin1Char('*') &&
+                i + 3 < len && !text[i + 3].isSpace()) {
+                int j = text.indexOf(QStringLiteral("***"), i + 3);
+                while (j != -1 && (text[j - 1].isSpace() || text[j - 1] == QLatin1Char('\\'))) {
+                    j = text.indexOf(QStringLiteral("***"), j + 1);
+                }
+                if (j > i + 3) {
+                    flushPlain();
+                    InlineMdState next = state;
+                    next.bold = true;
+                    next.italic = true;
+                    parseMarkdownInline(cursor, text.mid(i + 3, j - (i + 3)), next);
+                    i = j + 3;
+                    continue;
+                }
+            }
+
+            // 5. **bold**
+            if (i + 1 < len && text[i] == QLatin1Char('*') && text[i + 1] == QLatin1Char('*') &&
+                i + 2 < len && !text[i + 2].isSpace()) {
+                int j = text.indexOf(QStringLiteral("**"), i + 2);
+                while (j != -1 && (text[j - 1].isSpace() || text[j - 1] == QLatin1Char('\\'))) {
+                    j = text.indexOf(QStringLiteral("**"), j + 1);
+                }
+                if (j > i + 2) {
+                    flushPlain();
+                    InlineMdState next = state;
+                    next.bold = true;
+                    parseMarkdownInline(cursor, text.mid(i + 2, j - (i + 2)), next);
+                    i = j + 2;
+                    continue;
+                }
+            }
+
+            // 6. *italic*
+            if (text[i] == QLatin1Char('*') &&
+                (i + 1 < len && text[i + 1] != QLatin1Char('*') && !text[i + 1].isSpace())) {
+                int j = -1;
+                for (int k = i + 1; k < len; ++k) {
+                    if (text[k] == QLatin1Char('*') && text[k - 1] != QLatin1Char('\\')) {
+                        bool isDouble = (k + 1 < len && text[k + 1] == QLatin1Char('*'));
+                        if (isDouble) {
+                            ++k; // skip ** inside *...*
+                            continue;
+                        }
+                        if (!text[k - 1].isSpace()) {
+                            j = k;
+                            break;
+                        }
+                    }
+                }
+                if (j > i + 1) {
+                    flushPlain();
+                    InlineMdState next = state;
+                    next.italic = true;
+                    parseMarkdownInline(cursor, text.mid(i + 1, j - (i + 1)), next);
+                    i = j + 1;
+                    continue;
+                }
+            }
+
+            // 7. __bold__ and _italic_ (only at word boundaries so snake_case stays literal)
+            if (text[i] == QLatin1Char('_') && (i == 0 || !isWordChar(text[i - 1]))) {
+                if (i + 1 < len && text[i + 1] == QLatin1Char('_') &&
+                    i + 2 < len && !text[i + 2].isSpace()) {
+                    int j = text.indexOf(QStringLiteral("__"), i + 2);
+                    while (j != -1 && (text[j - 1].isSpace() || (j + 2 < len && isWordChar(text[j + 2])))) {
+                        j = text.indexOf(QStringLiteral("__"), j + 1);
+                    }
+                    if (j > i + 2) {
+                        flushPlain();
+                        InlineMdState next = state;
+                        next.bold = true;
+                        parseMarkdownInline(cursor, text.mid(i + 2, j - (i + 2)), next);
+                        i = j + 2;
+                        continue;
+                    }
+                } else if (i + 1 < len && text[i + 1] != QLatin1Char('_') && !text[i + 1].isSpace()) {
+                    int j = -1;
+                    for (int k = i + 1; k < len; ++k) {
+                        if (text[k] == QLatin1Char('_') && text[k - 1] != QLatin1Char('\\') &&
+                            !text[k - 1].isSpace() && (k + 1 >= len || !isWordChar(text[k + 1]))) {
+                            j = k;
+                            break;
+                        }
+                    }
+                    if (j > i + 1) {
+                        flushPlain();
+                        InlineMdState next = state;
+                        next.italic = true;
+                        parseMarkdownInline(cursor, text.mid(i + 1, j - (i + 1)), next);
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+
+            plainBuf.append(text[i]);
+            ++i;
+        }
+        flushPlain();
     }
 
     void applyThemeStyle() {
@@ -1491,18 +2316,27 @@ private:
             cursor.insertBlock();
         }
 
+        QTextBlockFormat divBfmt;
+        divBfmt.setHeadingLevel(0);
+        divBfmt.setProperty(kSmallBlockProperty, false);
+        cursor.setBlockFormat(divBfmt);
+
         QTextCharFormat divFmt;
         divFmt.setForeground(Qt::transparent);
         cursor.insertText(QStringLiteral("---"), divFmt);
 
-        cursor.insertBlock();
+        activeFontSize_ = pixelSizeForTier(0);
         QTextCharFormat textFmt = currentTypingCharFormat();
+        cursor.insertBlock(divBfmt, textFmt);
         cursor.setBlockCharFormat(textFmt);
         cursor.setCharFormat(textFmt);
 
         cursor.endEditBlock();
         setTextCursor(cursor);
         applyTypingFormatToCursor();
+        if (onToolbarSyncNeeded) {
+            onToolbarSyncNeeded();
+        }
         viewport()->update();
     }
 
@@ -1541,6 +2375,7 @@ private:
     qint64 lastSearchTriggerMs_ = 0;
     bool leaderMode_ = false;
     bool tabLeaderMode_ = false;
+    bool suppressCursorSync_ = false;
 };
 
 // Bottom-left formatting icon button matching exact Figma SVG icons:
@@ -2174,7 +3009,7 @@ public:
     void openForDirectory(const QString &notesDir) {
         entries_.clear();
         QDir dir(notesDir);
-        QStringList files = dir.entryList(QStringList() << "*.txt", QDir::Files, QDir::Name | QDir::Reversed);
+        QStringList files = dir.entryList(QStringList() << "*.md" << "*.txt", QDir::Files, QDir::Name | QDir::Reversed);
         for (const QString &fname : files) {
             QString fullPath = dir.filePath(fname);
             QString title = extractDisplayTitle(fullPath);
@@ -2189,8 +3024,11 @@ public:
             for (const QString &line : content.split('\n')) {
                 QString trimmed = line.trimmed();
                 if (!trimmed.isEmpty() && trimmed != QLatin1String("---")) {
-                    preview = trimmed.left(48);
-                    break;
+                    QString cleaned = isMarkdownFile(fullPath) ? stripMarkdownForPreview(trimmed) : trimmed;
+                    if (!cleaned.isEmpty()) {
+                        preview = cleaned.left(48);
+                        break;
+                    }
                 }
             }
             entries_.append(NoteEntry{title, dateLabel, fullPath, preview, content.toLower()});
@@ -2406,7 +3244,7 @@ public:
         };
 
         formatButtons_[2] = new FormatIconButton(FormatIconButton::IconType::ArrowUp, appConfig_.theme, formatRow);
-        formatButtons_[2]->setToolTip("Increase font size (jj + d)");
+        formatButtons_[2]->setToolTip("Heading size up — ### / ## / # (jj + d)");
         formatButtons_[2]->onClicked = [this]() {
             if (auto *ed = currentEditor()) {
                 ed->adjustTypingFontSize(appConfig_.keys.fontSizeStep);
@@ -2415,7 +3253,7 @@ public:
         };
 
         formatButtons_[3] = new FormatIconButton(FormatIconButton::IconType::ArrowDown, appConfig_.theme, formatRow);
-        formatButtons_[3]->setToolTip("Decrease font size (jj + f)");
+        formatButtons_[3]->setToolTip("Heading size down (jj + f)");
         formatButtons_[3]->onClicked = [this]() {
             if (auto *ed = currentEditor()) {
                 ed->adjustTypingFontSize(-appConfig_.keys.fontSizeStep);
@@ -2726,8 +3564,7 @@ private:
         });
         bind(kb.zoomReset, [this]() {
             if (auto *ed = currentEditor()) {
-                int diff = appConfig_.theme.editorFontSize - ed->activeFontSize();
-                ed->adjustTypingFontSize(diff);
+                ed->resetHeadingTier();
             }
         });
     }
@@ -2814,16 +3651,19 @@ private:
             base = "Note";
         }
         QString prefix = timestampPrefix.isEmpty() ? makeTimestampPrefix() : timestampPrefix;
+        QString ext = (!ignoreFilePath.isEmpty() && ignoreFilePath.endsWith(QLatin1String(".txt"), Qt::CaseInsensitive))
+                          ? QStringLiteral(".txt")
+                          : QStringLiteral(".md");
 
         QDir dir(notesDir_);
-        QString candidate = dir.filePath(prefix + base + ".txt");
+        QString candidate = dir.filePath(prefix + base + ext);
         if (candidate == ignoreFilePath || !QFileInfo::exists(candidate)) {
             return candidate;
         }
 
         int suffix = 2;
         while (true) {
-            candidate = dir.filePath(QString("%1%2 %3.txt").arg(prefix, base).arg(suffix));
+            candidate = dir.filePath(QString("%1%2 %3%4").arg(prefix, base).arg(suffix).arg(ext));
             if (candidate == ignoreFilePath || !QFileInfo::exists(candidate)) {
                 return candidate;
             }
@@ -2864,13 +3704,19 @@ private:
         editor->setFont(editorFont_);
         QFontMetrics fm(editorFont_);
         editor->setTabStopDistance(fm.horizontalAdvance(' ') * 4);
-        editor->setPlainText(initialContent);
-        if (!styleSpans.isEmpty()) {
-            editor->importStyleSpans(styleSpans);
+        if (isMarkdownFile(filePath)) {
+            editor->importMarkdown(initialContent);
         } else {
-            editor->formatExistingDividers();
+            editor->setPlainText(initialContent);
+            if (!styleSpans.isEmpty()) {
+                editor->importStyleSpans(styleSpans);
+            } else {
+                editor->formatExistingDividers();
+            }
         }
-        int initSize = (activeFontSize > 0) ? activeFontSize : appConfig_.theme.editorFontSize;
+        int initSize = isMarkdownFile(filePath)
+                           ? editor->activeFontSize()
+                           : ((activeFontSize > 0) ? activeFontSize : appConfig_.theme.editorFontSize);
         editor->setFormattingState(activeBold, activeItalic, initSize, highlightMode);
 
         if (activeColorSlot >= 0 && activeColorSlot < 4) {
@@ -2891,6 +3737,9 @@ private:
             syncFormatButtonsState();
             setDirty(editor, true);
             autoSaveTimer_->start();
+        };
+        editor->onToolbarSyncNeeded = [this]() {
+            syncFormatButtonsState();
         };
         editor->onNewTabTriggered = [this]() {
             QTimer::singleShot(0, this, [this]() {
@@ -3047,14 +3896,18 @@ private:
         // Never delete or move files from the filesystem when closing a tab;
         // preserve formatting metadata so reopening via // or Ctrl+Shift+T restores everything.
         if (ed && !fname.isEmpty()) {
-            QJsonArray spans = ed->exportStyleSpans();
+            QJsonArray spans = isMarkdownFile(path) ? QJsonArray{} : ed->exportStyleSpans();
             QString activeCol = ed->activeTypingColor().name(QColor::HexRgb).toUpper();
             int activeSlot = ed->activeTypingColorIndex();
             bool b = ed->isBoldActive();
             bool itl = ed->isItalicActive();
             int sz = ed->activeFontSize();
 
-            savedSpansMap_[fname] = spans;
+            if (isMarkdownFile(path)) {
+                savedSpansMap_.remove(fname);
+            } else {
+                savedSpansMap_[fname] = spans;
+            }
             savedActiveColorsMap_[fname] = activeCol;
             savedActiveSlotsMap_[fname] = activeSlot;
             QJsonObject fObj;
@@ -3143,7 +3996,11 @@ private:
         QSaveFile file(path);
         if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
             QTextStream out(&file);
-            out << ed->toPlainText();
+            if (isMarkdownFile(path)) {
+                out << ed->exportMarkdown();
+            } else {
+                out << ed->toPlainText();
+            }
             out.flush();
             if (file.commit()) {
                 setDirty(ed, false);
@@ -3173,7 +4030,11 @@ private:
                 QString fname = QFileInfo(path).fileName();
                 tabsArray.append(fname);
                 if (auto *ed = editorAt(i)) {
-                    savedSpansMap_[fname] = ed->exportStyleSpans();
+                    if (isMarkdownFile(path)) {
+                        savedSpansMap_.remove(fname);
+                    } else {
+                        savedSpansMap_[fname] = ed->exportStyleSpans();
+                    }
                     savedActiveColorsMap_[fname] = ed->activeTypingColor().name(QColor::HexRgb).toUpper();
                     savedActiveSlotsMap_[fname] = ed->activeTypingColorIndex();
                     QJsonObject fObj;
@@ -3210,7 +4071,7 @@ private:
         loadingSession_ = true;
 
         QDir dir(notesDir_);
-        QStringList existingFiles = dir.entryList(QStringList() << "*.txt", QDir::Files, QDir::Name);
+        QStringList existingFiles = dir.entryList(QStringList() << "*.md" << "*.txt", QDir::Files, QDir::Name);
 
         QStringList orderedFiles;
         QString activeFileName;
@@ -3335,13 +4196,13 @@ int main(int argc, char *argv[]) {
     }
 
     QCommandLineParser parser;
-    parser.setApplicationDescription("Mime Notes — Minimalist plain-text tabbed notepad with automatic saving.");
+    parser.setApplicationDescription("Mime Notes — Minimalist Markdown tabbed notepad with automatic saving.");
     parser.addHelpOption();
     parser.addVersionOption();
 
     QCommandLineOption dirOption(
         QStringList() << "d" << "dir",
-        "Directory where note .txt files are stored (default: Documents/Mimenotes).",
+        "Directory where note .md files are stored (default: Documents/Mimenotes).",
         "path");
     parser.addOption(dirOption);
 
