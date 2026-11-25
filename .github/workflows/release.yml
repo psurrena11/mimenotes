@@ -124,7 +124,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "build/Release/mimenotes.exe" "$stage/mimenotes.exe"
           Copy-Item "README.md", "LICENSE" "$stage/"
-          & "$env:Qt6_DIR/bin/windeployqt.exe" --release --no-translations "$stage/mimenotes.exe"
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations "$stage/mimenotes.exe"
           Compress-Archive -Path "$stage/*" -DestinationPath "MimeNotes-Windows-x64.zip" -Force
 
       - name: Upload Windows artifact
@@ -166,7 +166,7 @@ jobs:
           host: 'linux'
           target: 'desktop'
           arch: 'linux_gcc_64'
-          dir: '${{ runner.temp }}/qt'
+          dir: '${{ runner.temp }}/qt-host'
           cache: 'true'
           cache-key-prefix: 'qt-host'
 
@@ -174,17 +174,17 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          host: 'linux'
+          host: 'all_os'
           target: 'android'
           arch: 'android_arm64_v8a'
-          dir: '${{ runner.temp }}/qt'
+          dir: '${{ runner.temp }}/qt-android'
           cache: 'true'
           cache-key-prefix: 'qt-android'
 
       - name: Configure and build Android APK
         run: |
-          QT_HOST="${{ runner.temp }}/qt/6.8.3/gcc_64"
-          QT_ANDROID="${{ runner.temp }}/qt/6.8.3/android_arm64_v8a"
+          QT_HOST="${{ runner.temp }}/qt-host/6.8.3/gcc_64"
+          QT_ANDROID="${QT_ROOT_DIR}"
           NDK_DIR="${ANDROID_SDK_ROOT}/ndk/26.1.10909125"
           cmake -B build-android -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
