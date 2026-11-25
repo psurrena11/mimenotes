@@ -133,9 +133,102 @@ jobs:
           name: MimeNotes-Windows-x64
           path: MimeNotes-Windows-x64.zip
 
+  build-android:
+    name: Android (arm64 APK)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Ninja build tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK r26b and SDK 34
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+
+      - name: Install Qt 6.8.3 (Linux host tools)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'linux_gcc_64'
+          dir: '${{ runner.temp }}/qt'
+          cache: 'true'
+          cache-key-prefix: 'qt-host'
+
+      - name: Install Qt 6.8.3 (Android arm64)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'linux'
+          target: 'android'
+          arch: 'android_arm64_v8a'
+          dir: '${{ runner.temp }}/qt'
+          cache: 'true'
+          cache-key-prefix: 'qt-android'
+
+      - name: Configure and build Android APK
+        run: |
+          QT_HOST="${{ runner.temp }}/qt/6.8.3/gcc_64"
+          QT_ANDROID="${{ runner.temp }}/qt/6.8.3/android_arm64_v8a"
+          NDK_DIR="${ANDROID_SDK_ROOT}/ndk/26.1.10909125"
+          cmake -B build-android -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${QT_ANDROID}/lib/cmake/Qt6/qt.toolchain.cmake" \
+            -DQT_HOST_PATH="${QT_HOST}" \
+            -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
+            -DANDROID_NDK_ROOT="${NDK_DIR}" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26
+          cmake --build build-android --target apk --parallel
+
+      - name: Sign and package APK
+        run: |
+          APK_RAW="$(find build-android -name '*-release-unsigned.apk' -o -name '*-debug.apk' | head -n 1)"
+          if [ -z "$APK_RAW" ]; then
+            echo "Error: No APK produced by build!"
+            find build-android -maxdepth 5 -name '*.apk'
+            exit 1
+          fi
+          echo "Found built APK: $APK_RAW"
+          if [[ "$APK_RAW" == *"-unsigned.apk" ]]; then
+            keytool -genkeypair -v \
+              -keystore build-android/sideload.keystore \
+              -storepass android -keypass android \
+              -alias mimenotes -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Mime Notes, O=Mime Notes, C=US"
+            "${ANDROID_SDK_ROOT}/build-tools/34.0.0/zipalign" -p -f 4 "$APK_RAW" build-android/aligned.apk
+            "${ANDROID_SDK_ROOT}/build-tools/34.0.0/apksigner" sign \
+              --ks build-android/sideload.keystore \
+              --ks-pass pass:android --key-pass pass:android --ks-key-alias mimenotes \
+              --out MimeNotes-Android-arm64.apk build-android/aligned.apk
+          else
+            cp "$APK_RAW" MimeNotes-Android-arm64.apk
+          fi
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MimeNotes-Android-arm64
+          path: MimeNotes-Android-arm64.apk
+
   release:
     name: Publish GitHub Release
-    needs: [build-linux, build-macos, build-windows]
+    needs: [build-linux, build-macos, build-windows, build-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -153,3 +246,4 @@ jobs:
             artifacts/MimeNotes-Linux-x64.tar.gz
             artifacts/MimeNotes-macOS-arm64.dmg
             artifacts/MimeNotes-Windows-x64.zip
+            artifacts/MimeNotes-Android-arm64.apk

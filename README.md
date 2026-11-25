@@ -144,7 +144,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-Prebuilt binaries for **Linux** (`.tar.gz`), **macOS** (`.dmg`), and **Windows** (`.zip`) are automatically compiled by GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) and published to **GitHub Releases** whenever a version tag (`v*`) is pushed:
+Prebuilt binaries for **Linux** (`.tar.gz`), **macOS** (`.dmg`), **Windows** (`.zip`), and **Android** (`.apk`) are automatically compiled by GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) and published to **GitHub Releases** whenever a version tag (`v*`) is pushed:
 
 ```bash
 git tag v1.0.0

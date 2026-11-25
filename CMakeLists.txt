@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mimenotes VERSION 1.0.0 LANGUAGES CXX)
+project(mimenotes VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,7 +13,7 @@ set(PROJECT_SOURCES
     resources.qrc
 )
 
-if(APPLE)
+if(APPLE AND NOT IOS)
     set(MACOS_ICON "${CMAKE_CURRENT_BINARY_DIR}/mimenotes.icns")
     if(EXISTS "${MACOS_ICON}")
         list(APPEND PROJECT_SOURCES "${MACOS_ICON}")
@@ -28,7 +28,7 @@ elseif(WIN32)
     endif()
 endif()
 
-add_executable(mimenotes WIN32 MACOSX_BUNDLE ${PROJECT_SOURCES})
+qt_add_executable(mimenotes MANUAL_FINALIZATION ${PROJECT_SOURCES})
 
 target_link_libraries(mimenotes PRIVATE Qt6::Widgets Qt6::Svg)
 
@@ -38,8 +38,11 @@ else()
     target_compile_options(mimenotes PRIVATE -Wall -Wextra)
 endif()
 
-if(APPLE)
+if(WIN32)
+    set_target_properties(mimenotes PROPERTIES WIN32_EXECUTABLE TRUE)
+elseif(APPLE AND NOT IOS)
     set_target_properties(mimenotes PROPERTIES
+        MACOSX_BUNDLE TRUE
         OUTPUT_NAME "Mime Notes"
         MACOSX_BUNDLE_BUNDLE_NAME "Mime Notes"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.psurrena.mimenotes"
@@ -47,4 +50,15 @@ if(APPLE)
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
         MACOSX_BUNDLE_ICON_FILE "mimenotes.icns"
     )
+elseif(ANDROID)
+    set_target_properties(mimenotes PROPERTIES
+        QT_ANDROID_PACKAGE_NAME "com.psurrena.mimenotes"
+        QT_ANDROID_APP_NAME "Mime Notes"
+        QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
+        QT_ANDROID_VERSION_CODE 2
+        QT_ANDROID_MIN_SDK_VERSION 26
+        QT_ANDROID_TARGET_SDK_VERSION 34
+    )
 endif()
+
+qt_finalize_executable(mimenotes)

@@ -28,6 +28,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QScrollBar>
+#include <QScroller>
 #include <QShortcut>
 #include <QStack>
 #include <QStackedWidget>
@@ -199,8 +200,8 @@ QColor contrastTextColor(const QColor &bg) {
 }
 
 QString userConfigDirectory() {
-#ifdef Q_OS_MACOS
-    // ~/Library/Application Support/mimenotes
+#if defined(Q_OS_MACOS) || defined(Q_OS_ANDROID)
+    // macOS: ~/Library/Application Support/mimenotes  |  Android: app-private data dir
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 #else
     // Linux: ~/.config/mimenotes  |  Windows: %LOCALAPPDATA%\mimenotes
@@ -293,6 +294,7 @@ QFont makeFontWithFallback(const QString &primaryFamily, int pixelSize, QFont::W
     families << QStringLiteral("Inter")
              << QStringLiteral("SF Pro Text")
              << QStringLiteral("Segoe UI")
+             << QStringLiteral("Roboto")
              << QStringLiteral("Adwaita Sans")
              << QStringLiteral("Noto Sans")
              << QStringLiteral("Sans Serif");
@@ -316,6 +318,12 @@ QString expandTilde(const QString &path) {
 }
 
 QString defaultNotesDirectory() {
+#ifdef Q_OS_ANDROID
+    QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (!appData.isEmpty()) {
+        return QDir(appData).filePath(QStringLiteral("Mimenotes"));
+    }
+#endif
     QString docsPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     if (!docsPath.isEmpty() && QDir(docsPath).exists()) {
         return QDir(docsPath).filePath(QStringLiteral("Mimenotes"));
@@ -685,6 +693,9 @@ public:
         document()->setDocumentMargin(0);
         setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+#ifdef Q_OS_ANDROID
+        QScroller::grabGesture(viewport(), QScroller::TouchGesture);
+#endif
 
         applyThemeStyle();
         applyTypingFormatToCursor();
@@ -2386,24 +2397,34 @@ public:
         Bold,
         Italic,
         ArrowUp,
-        ArrowDown
+        ArrowDown,
+        Highlight,
+        Search
     };
 
     FormatIconButton(IconType type, const ThemeConfig &theme, QWidget *parent = nullptr)
         : QWidget(parent), type_(type), theme_(theme) {
         if (type_ == IconType::Bold) {
-            setFixedSize(9, 12);
+            glyphSize_ = QSize(9, 12);
             svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_bold.svg"));
         } else if (type_ == IconType::Italic) {
-            setFixedSize(12, 12);
+            glyphSize_ = QSize(12, 12);
             svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_italic.svg"));
         } else if (type_ == IconType::ArrowUp) {
-            setFixedSize(9, 12);
+            glyphSize_ = QSize(9, 12);
             svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_up.svg"));
-        } else {
-            setFixedSize(8, 12);
+        } else if (type_ == IconType::ArrowDown) {
+            glyphSize_ = QSize(8, 12);
             svgPath_ = resolveAssetSvgPath(QStringLiteral("icon_down.svg"));
+        } else {
+            glyphSize_ = QSize(14, 14);
         }
+#ifdef Q_OS_ANDROID
+        setFixedSize(28, 28);
+        glyphSize_ = QSize(qRound(glyphSize_.width() * 1.5), qRound(glyphSize_.height() * 1.5));
+#else
+        setFixedSize(glyphSize_);
+#endif
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::NoFocus);
         setMouseTracking(true);
@@ -2464,7 +2485,25 @@ protected:
         }
 
         if (!svgPath_.isEmpty()) {
-            renderTintedSvg(p, svgPath_, rect(), iconColor, devicePixelRatioF());
+            QRect target((width() - glyphSize_.width()) / 2,
+                         (height() - glyphSize_.height()) / 2,
+                         glyphSize_.width(),
+                         glyphSize_.height());
+            renderTintedSvg(p, svgPath_, target, iconColor, devicePixelRatioF());
+        } else if (type_ == IconType::Highlight) {
+            // Simple crisp highlighter square-marker glyph for mobile touch toolbar
+            QRectF box((width() - 16.0) / 2.0, (height() - 16.0) / 2.0, 16.0, 16.0);
+            p.setPen(QPen(iconColor, 1.8));
+            p.setBrush(active_ ? iconColor : Qt::NoBrush);
+            p.drawRoundedRect(box, 3.0, 3.0);
+        } else if (type_ == IconType::Search) {
+            // Simple crisp magnifying-glass glyph for mobile quick search
+            p.setPen(QPen(iconColor, 1.8, Qt::SolidLine, Qt::RoundCap));
+            p.setBrush(Qt::NoBrush);
+            QPointF center(width() / 2.0 - 2.0, height() / 2.0 - 2.0);
+            p.drawEllipse(center, 5.5, 5.5);
+            p.drawLine(QPointF(center.x() + 4.0, center.y() + 4.0),
+                       QPointF(center.x() + 8.5, center.y() + 8.5));
         }
     }
 
@@ -2472,6 +2511,7 @@ private:
     IconType type_;
     ThemeConfig theme_;
     QString svgPath_;
+    QSize glyphSize_{12, 12};
     bool active_ = false;
     bool hovered_ = false;
     bool highlighted_ = false;
@@ -2482,7 +2522,11 @@ class ColorDotButton : public QWidget {
 public:
     ColorDotButton(const QColor &color, const QColor &bgColor, QWidget *parent = nullptr)
         : QWidget(parent), color_(color), bgColor_(bgColor) {
+#ifdef Q_OS_ANDROID
+        setFixedSize(24, 24);
+#else
         setFixedSize(12, 12);
+#endif
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::NoFocus);
     }
@@ -2523,27 +2567,31 @@ protected:
         p.setPen(Qt::NoPen);
         p.setBrush(color_);
 
+        const qreal sz = static_cast<qreal>(width());
         if (squareMode_) {
-            p.drawRoundedRect(QRectF(0.0, 0.0, 12.0, 12.0), 1.5, 1.5);
+            p.drawRoundedRect(QRectF(0.0, 0.0, sz, sz), sz * 0.125, sz * 0.125);
         } else {
-            p.drawEllipse(QRectF(0.0, 0.0, 12.0, 12.0));
+            p.drawEllipse(QRectF(0.0, 0.0, sz, sz));
         }
 
         // Small swatch_marker (#212421) circle in the center of the active swatch in both modes
         if (activeSwatch_) {
             p.setPen(Qt::NoPen);
             p.setBrush(bgColor_);
-            p.drawEllipse(QRectF(4.0, 4.0, 4.0, 4.0));
+            const qreal dot = sz / 3.0;
+            p.drawEllipse(QRectF(dot, dot, dot, dot));
         }
 
         // Subtle inner ring indicator when 'jj' leader mode is waiting for a key
         if (highlighted_) {
             p.setBrush(Qt::NoBrush);
             p.setPen(QPen(bgColor_, 1.6));
+            const qreal inset = sz / 6.0;
+            const qreal inner = sz - 2.0 * inset;
             if (squareMode_) {
-                p.drawRoundedRect(QRectF(2.0, 2.0, 8.0, 8.0), 1.0, 1.0);
+                p.drawRoundedRect(QRectF(inset, inset, inner, inner), 1.0, 1.0);
             } else {
-                p.drawEllipse(QRectF(2.0, 2.0, 8.0, 8.0));
+                p.drawEllipse(QRectF(inset, inset, inner, inner));
             }
         }
     }
@@ -2570,7 +2618,11 @@ class HeaderTabBar : public QWidget {
 public:
     explicit HeaderTabBar(const ThemeConfig &theme, QWidget *parent = nullptr)
         : QWidget(parent), theme_(theme) {
+#ifdef Q_OS_ANDROID
+        setFixedHeight(48);
+#else
         setFixedHeight(37);
+#endif
         setMouseTracking(true);
         addIconPath_ = resolveAssetSvgPath(QStringLiteral("icon_add.svg"));
 
@@ -2677,12 +2729,21 @@ protected:
             p.setPen(textColor);
             p.drawText(tl.textRect, Qt::AlignLeft | Qt::AlignVCenter, elideTabLabel(titles_[i]));
 
+#ifdef Q_OS_ANDROID
+            if (isSelected || isHovered) {
+                p.setFont(font_);
+                QColor closeColor = closeHovered_ ? theme_.activeTabColor : theme_.hoverTabColor;
+                p.setPen(closeColor);
+                p.drawText(tl.closeRect, Qt::AlignCenter, QStringLiteral("×"));
+            }
+#else
             if (isHovered) {
                 p.setFont(font_);
                 QColor closeColor = closeHovered_ ? theme_.activeTabColor : theme_.hoverTabColor;
                 p.setPen(closeColor);
                 p.drawText(tl.closeRect, Qt::AlignCenter, QStringLiteral("×"));
             }
+#endif
         }
 
         QRect plusR = plusButtonRect();
@@ -2840,11 +2901,19 @@ private:
 
     // Figma node 10:296 ("icon_add"): 14x14 right-aligned inside 20px frame padding, vertically centered in y=20..37
     QRect plusButtonRect() const {
+#ifdef Q_OS_ANDROID
+        return QRect(width() - 16 - 20, 14, 20, 20);
+#else
         return QRect(width() - 20 - 14, 21, 14, 14);
+#endif
     }
 
     QRect plusHitRect() const {
+#ifdef Q_OS_ANDROID
+        return plusButtonRect().adjusted(-10, -10, 10, 10);
+#else
         return plusButtonRect().adjusted(-6, -4, 6, 4);
+#endif
     }
 
     static QString elideTabLabel(const QString &title) {
@@ -2859,6 +2928,24 @@ private:
     QList<TabLayout> computeLayouts() const {
         QList<TabLayout> list;
         QFontMetrics fm(font_);
+#ifdef Q_OS_ANDROID
+        int h = std::max(28, fm.height() + 6);
+        int topY = (height() - h) / 2;
+        int x = 16;
+        int maxRight = width() - 56;
+        for (int i = 0; i < titles_.size(); ++i) {
+            QString display = elideTabLabel(titles_[i]);
+            int textW = std::max(28, fm.horizontalAdvance(display) + 4);
+            if (x + textW > maxRight && i > 0) {
+                break;
+            }
+            QRect textR(x, topY, textW, h);
+            QRect closeR(x + textW + 2, topY, 24, h);
+            QRect hitR(x - 4, 4, textW + 30, height() - 8);
+            list.append(TabLayout{textR, closeR, hitR});
+            x += textW + 32;
+        }
+#else
         int h = std::max(17, fm.height());
         int x = 20;
         int maxRight = width() - 46;
@@ -2874,6 +2961,7 @@ private:
             list.append(TabLayout{textR, closeR, hitR});
             x += textW + 20;
         }
+#endif
         return list;
     }
 
@@ -3213,6 +3301,18 @@ public:
         // - Lower-left ("format"): 4 SVG icons (9x12, 12x12, 9x12, 8x12) with 20px gap
         // - Lower-right ("swatches"): 4 swatches (12x12, 16px gap, total 96x12)
         auto *bottomBar = new QWidget(centralRoot_);
+#ifdef Q_OS_ANDROID
+        bottomBar->setFixedHeight(48);
+        auto *bottomLayout = new QHBoxLayout(bottomBar);
+        bottomLayout->setContentsMargins(16, 4, 16, 12);
+        bottomLayout->setSpacing(0);
+
+        auto *formatRow = new QWidget(bottomBar);
+        formatRow->setFixedHeight(32);
+        auto *formatLayout = new QHBoxLayout(formatRow);
+        formatLayout->setContentsMargins(0, 0, 0, 0);
+        formatLayout->setSpacing(8);
+#else
         bottomBar->setFixedHeight(32); // 12px footer + 20px bottom padding
         auto *bottomLayout = new QHBoxLayout(bottomBar);
         bottomLayout->setContentsMargins(20, 0, 20, 20);
@@ -3224,6 +3324,7 @@ public:
         auto *formatLayout = new QHBoxLayout(formatRow);
         formatLayout->setContentsMargins(0, 0, 0, 0);
         formatLayout->setSpacing(20);
+#endif
 
         formatButtons_[0] = new FormatIconButton(FormatIconButton::IconType::Bold, appConfig_.theme, formatRow);
         formatButtons_[0]->setToolTip("Bold (jj + a)");
@@ -3265,12 +3366,38 @@ public:
             formatLayout->addWidget(formatButtons_[i]);
         }
 
-        // Lower-right 4 color dots (96 x 12)
+#ifdef Q_OS_ANDROID
+        mobileHighlightBtn_ = new FormatIconButton(FormatIconButton::IconType::Highlight, appConfig_.theme, formatRow);
+        mobileHighlightBtn_->setToolTip("Toggle Highlighter Mode");
+        mobileHighlightBtn_->onClicked = [this]() {
+            if (auto *ed = currentEditor()) {
+                ed->toggleHighlightMode();
+                ed->setFocus();
+            }
+        };
+        formatLayout->addWidget(mobileHighlightBtn_);
+
+        mobileSearchBtn_ = new FormatIconButton(FormatIconButton::IconType::Search, appConfig_.theme, formatRow);
+        mobileSearchBtn_->setToolTip("Search Notes");
+        mobileSearchBtn_->onClicked = [this]() {
+            openSearchOverlay();
+        };
+        formatLayout->addWidget(mobileSearchBtn_);
+#endif
+
+        // Lower-right 4 color dots (96 x 12 on desktop, 132 x 24 on Android)
         auto *colorsRow = new QWidget(bottomBar);
+#ifdef Q_OS_ANDROID
+        colorsRow->setFixedSize(132, 24);
+        auto *colorsLayout = new QHBoxLayout(colorsRow);
+        colorsLayout->setContentsMargins(0, 0, 0, 0);
+        colorsLayout->setSpacing(12);
+#else
         colorsRow->setFixedSize(96, 12);
         auto *colorsLayout = new QHBoxLayout(colorsRow);
         colorsLayout->setContentsMargins(0, 0, 0, 0);
         colorsLayout->setSpacing(16);
+#endif
 
         for (int i = 0; i < 4; ++i) {
             const QColor &col = appConfig_.theme.textColors[i];
@@ -3392,6 +3519,12 @@ private:
                 formatButtons_[i]->applyTheme(appConfig_.theme);
             }
         }
+        if (mobileHighlightBtn_) {
+            mobileHighlightBtn_->applyTheme(appConfig_.theme);
+        }
+        if (mobileSearchBtn_) {
+            mobileSearchBtn_->applyTheme(appConfig_.theme);
+        }
     }
 
     void syncFormatButtonsState() {
@@ -3411,6 +3544,9 @@ private:
             formatButtons_[3]->setActive(ed && curSz < defaultSz);
         }
         bool hl = ed && ed->isHighlightMode();
+        if (mobileHighlightBtn_) {
+            mobileHighlightBtn_->setActive(hl);
+        }
         int activeSlot = ed ? ed->activeTypingColorIndex() : 0;
         for (int i = 0; i < 4; ++i) {
             if (colorButtons_[i]) {
@@ -4085,7 +4221,12 @@ private:
                 QJsonObject obj = doc.object();
                 int w = obj["window_width"].toInt(appConfig_.theme.windowWidth);
                 int h = obj["window_height"].toInt(appConfig_.theme.windowHeight);
+#ifndef Q_OS_ANDROID
                 resize(std::max(300, w), std::max(240, h));
+#else
+                Q_UNUSED(w);
+                Q_UNUSED(h);
+#endif
 
                 activeFileName = obj["active_tab"].toString();
                 savedSpansMap_ = obj["tab_color_spans"].toObject();
@@ -4153,6 +4294,8 @@ private:
     QStackedWidget *editorStack_ = nullptr;
     QuickSearchOverlay *searchOverlay_ = nullptr;
     std::array<FormatIconButton *, 4> formatButtons_ = {nullptr, nullptr, nullptr, nullptr};
+    FormatIconButton *mobileHighlightBtn_ = nullptr;
+    FormatIconButton *mobileSearchBtn_ = nullptr;
     std::array<ColorDotButton *, 4> colorButtons_ = {nullptr, nullptr, nullptr, nullptr};
     QList<QShortcut *> shortcuts_;
     QFileSystemWatcher *configWatcher_ = nullptr;
@@ -4175,7 +4318,7 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationName("mimenotes");
     QApplication::setApplicationDisplayName("Mime Notes");
     QApplication::setDesktopFileName("mimenotes");
-    QApplication::setApplicationVersion("1.0");
+    QApplication::setApplicationVersion("1.1.0");
 
     QIcon appIcon = QIcon::fromTheme("mimenotes");
     if (appIcon.isNull()) {
@@ -4244,7 +4387,11 @@ int main(int argc, char *argv[]) {
     AppConfig appConfig = loadAppConfig(explicitConfigPath, themeOverride);
 
     NotepadWindow window(appConfig, explicitNotesDir, explicitConfigPath, themeOverride);
+#ifdef Q_OS_ANDROID
+    window.showMaximized();
+#else
     window.show();
+#endif
 
     QString screenshotPath = parser.value(screenshotOption);
     if (!screenshotPath.isEmpty()) {
